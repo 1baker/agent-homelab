@@ -7,6 +7,16 @@
   "required": ["schema_version", "site", "nodes", "services"],
   "properties": {
     "schema_version": {"const": 1},
+    "tailscale": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["authority", "credential_ref"],
+      "properties": {
+        "authority": {"enum": ["console", "gitops"]},
+        "credential_ref": {"$ref": "#/$defs/tailscaleCredentialRef"},
+        "writer_credential_ref": {"$ref": "#/$defs/tailscaleCredentialRef"}
+      }
+    },
     "site": {
       "type": "object",
       "additionalProperties": false,
@@ -37,6 +47,17 @@
     }
   },
   "$defs": {
+    "tailscaleCredentialRef": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["file"],
+          "properties": {"file": {"type": "string", "pattern": "^/", "minLength": 2}}
+        },
+        {"$ref": "#/$defs/secretRef"}
+      ]
+    },
     "secretRef": {
       "type": "object",
       "additionalProperties": false,

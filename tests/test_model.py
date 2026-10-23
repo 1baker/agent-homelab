@@ -51,3 +51,39 @@ def test_ephemeral_override_requires_explicit_flag() -> None:
     upstream["port"] = 40000
     upstream["allow_ephemeral_port"] = True
     validate_inventory(data)
+
+
+@pytest.mark.parametrize("authority", ["console", "gitops"])
+@pytest.mark.parametrize("credential_ref", [{"env": "TAILSCALE_READER"}, {"file": "/private/reader.json"}])
+def test_optional_tailscale_references_validate_without_loading_credentials(authority, credential_ref) -> None:
+    data = payload()
+    data["tailscale"] = {"authority": authority, "credential_ref": credential_ref}
+    validate_inventory(data)
+    data["tailscale"]["writer_credential_ref"] = {"file": "/private/writer.json"}
+    validate_inventory(data)
+
+
+@pytest.mark.parametrize(
+    "integration",
+    [
+        {"credential_ref": {"env": "TAILSCALE_READER"}},
+        {"authority": "console"},
+        {"authority": "unknown", "credential_ref": {"env": "TAILSCALE_READER"}},
+        {"authority": "console", "credential_ref": {"file": "relative.json"}},
+        {"authority": "console", "credential_ref": {"file": "/private/reader.json", "env": "TAILSCALE_READER"}},
+        {"authority": "console", "credential_ref": {"env": "lowercase"}},
+        {"authority": "console", "credential_ref": {"client_id": "synthetic-id", "client_secret": "synthetic"}},
+        {"authority": "console", "credential_ref": {"env": "TAILSCALE_READER"}, "client_id": "synthetic-id"},
+        {"authority": "console", "credential_ref": {"env": "TAILSCALE_READER"}, "client_secret": "synthetic"},
+        {
+            "authority": "console",
+            "credential_ref": {"env": "TAILSCALE_READER"},
+            "writer_credential_ref": {"token": "synthetic"},
+        },
+    ],
+)
+def test_tailscale_configuration_rejects_ambiguous_or_inline_credentials(integration) -> None:
+    data = payload()
+    data["tailscale"] = integration
+    with pytest.raises(InventoryError):
+        validate_inventory(data)
