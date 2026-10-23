@@ -40,6 +40,20 @@ and never publish either. Access tokens are obtained from the fixed HTTPS token
 endpoint and remain in memory. Revocation happens through the provider admin
 console; the CLI does not mint or revoke credentials.
 
+Check every ancestor before choosing the private state root. An entire home
+directory can be a Git worktree for dotfiles; an ignored subdirectory inside it
+still fails the outside-Git requirement. Use a dedicated durable directory
+outside that worktree, created by the operator's administrator when necessary.
+Temporary or runtime directories are not a durable credential default. A
+home-only backup cannot recover outside-home state; retain a private backup or
+plan to revoke and enroll a new reader credential after state loss.
+
+Enrollment checks Git ancestry, symlinks and an existing destination before
+checking for a terminal. These checks create nothing. Only a valid destination
+with a human terminal proceeds to directory checks and hidden prompts. Staging
+must inspect every intended private path and its ownership/permissions; a
+terminal-required error alone is not complete enrollment acceptance.
+
 ## Inventory
 
 Add this optional section to a validated private inventory:

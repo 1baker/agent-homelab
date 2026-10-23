@@ -237,12 +237,12 @@ def _sha(payload: bytes) -> str:
 
 def enroll(path: str | Path) -> dict[str, Any]:
     """Human-only, no-echo intake. Both values are deliberately absent from argv."""
-    if not sys.stdin.isatty() or not sys.stderr.isatty():
-        raise PolicyError("ENROLL_REQUIRES_HUMAN_TTY")
     destination = _path(path)
-    _directory(destination.parent, create=True)
     if destination.exists():
         raise PolicyError("PRIVATE_FILE_CREATE_REFUSED")
+    if not sys.stdin.isatty() or not sys.stderr.isatty():
+        raise PolicyError("ENROLL_REQUIRES_HUMAN_TTY")
+    _directory(destination.parent, create=True)
     try:
         with warnings.catch_warnings():
             # getpass otherwise falls back to echoed stdin when no safe TTY exists.

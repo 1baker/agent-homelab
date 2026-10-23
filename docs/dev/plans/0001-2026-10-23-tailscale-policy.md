@@ -12,6 +12,19 @@ product lint. Claude source review, installation and actual provider use remain
 separate acceptance steps. Full-tree lint and privacy scans reproduce unchanged
 baseline findings in installed policy-tool metadata; product changes add none.
 
+The first human enrollment attempt exposed a staging gap: the selected home
+state path had a Git ancestor, but the no-terminal smoke stopped before checking
+it. The security guard refused before any credential prompt or file creation.
+Intake readiness is therefore PARTIAL. The bounded repair moves pure path and
+destination checks ahead of the terminal guard, adds regressions, and declares a
+durable private state root outside every Git ancestor. Human administrator setup
+is required where the operator cannot create that leaf. No temporary credential
+storage or weakened Git guard is permitted.
+The lead independently verified all 116 tests after the ordering repair. Actual
+private-state creation and human enrollment remain pending; the existing home
+state contains install metadata and an empty credential directory, with no
+credential or policy material to migrate. Preserve it as history.
+
 ## Objective and scope
 
 Allow an operator to enroll a scoped OAuth credential privately, read the
@@ -51,6 +64,10 @@ existing task counters and shared budget across compaction or worker replacement
 - Human-only enrollment uses a real terminal and hidden prompts. Exclusive
   private files are owned by the operator, outside Git, with no symlinks or
   overwrites. Tokens remain in memory.
+- Staging checks every private path, including when the whole home directory is
+  a Git worktree. Pure path/destination checks precede terminal refusal and never
+  create directories or prompt. Actual bootstrap also verifies the private
+  directory owner, group and mode before installing any credential reference.
 - Only fixed HTTPS vendor endpoints are used. Redirects, raw error bodies and
   credential-bearing output are rejected. Named environment references read
   only the named variable.

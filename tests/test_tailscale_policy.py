@@ -216,8 +216,73 @@ def test_inline_credential_fields_rejected(extra):
 
 def test_enroll_requires_tty(tmp_path, monkeypatch):
     monkeypatch.setattr(tp.sys.stdin, "isatty", lambda: False)
+    prompts = []
+    monkeypatch.setattr(tp.getpass, "getpass", lambda prompt: prompts.append(prompt))
+    destination = tmp_path / "private/reader.json"
     with pytest.raises(tp.PolicyError, match="HUMAN_TTY"):
-        tp.enroll(tmp_path / "private/reader.json")
+        tp.enroll(destination)
+    assert not destination.parent.exists()
+    assert not prompts
+
+
+@pytest.mark.parametrize(
+    "scenario,expected",
+    [
+        ("git-home", "PRIVATE_PATH_INSIDE_GIT"),
+        ("symlink-parent", "PRIVATE_PATH_SYMLINK"),
+        ("existing-file", "PRIVATE_FILE_CREATE_REFUSED"),
+    ],
+)
+def test_enroll_path_failures_precede_tty_without_mutation(tmp_path, monkeypatch, scenario, expected):
+    home = tmp_path / "home"
+    home.mkdir()
+    (home / ".git").mkdir()
+    if scenario == "git-home":
+        destination = home / ".local/state/intake/reader.json"
+    elif scenario == "symlink-parent":
+        alias = tmp_path / "alias"
+        alias.symlink_to(home, target_is_directory=True)
+        destination = alias / "intake/reader.json"
+    else:
+        destination = private(tmp_path / "existing", "reader.json", b"existing private fixture")
+    parents_before = destination.parent.exists()
+    contents_before = destination.read_bytes() if destination.exists() else None
+    entries_before = set(tmp_path.rglob("*"))
+    prompts = []
+    monkeypatch.setattr(tp.sys.stdin, "isatty", lambda: False)
+    monkeypatch.setattr(tp.sys.stderr, "isatty", lambda: False)
+    monkeypatch.setattr(tp.getpass, "getpass", lambda prompt: prompts.append(prompt))
+    with pytest.raises(tp.PolicyError, match=expected):
+        tp.enroll(destination)
+    assert not prompts
+    assert destination.parent.exists() == parents_before
+    assert set(tmp_path.rglob("*")) == entries_before
+    if contents_before is not None:
+        assert destination.read_bytes() == contents_before
+    else:
+        assert not destination.exists()
+
+
+def test_off_git_sibling_reaches_hidden_intake_without_credential(tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    home.mkdir()
+    (home / ".git").mkdir()
+    destination = tmp_path / "private-runtime/intake/reader.json"
+    assert tp._path(destination) == destination
+
+    class PromptReached(RuntimeError):
+        pass
+
+    def stop_before_input(prompt):
+        raise PromptReached("STOP_BEFORE_CREDENTIAL_INPUT")
+
+    monkeypatch.setattr(tp.sys.stdin, "isatty", lambda: True)
+    monkeypatch.setattr(tp.sys.stderr, "isatty", lambda: True)
+    monkeypatch.setattr(tp.getpass, "getpass", stop_before_input)
+    with pytest.raises(PromptReached, match="STOP_BEFORE_CREDENTIAL_INPUT"):
+        tp.enroll(destination)
+    assert not destination.exists()
+    assert stat.S_IMODE(destination.parent.stat().st_mode) == 0o700
 
 
 def test_enroll_hidden_exclusive(tmp_path, monkeypatch, capsys):
