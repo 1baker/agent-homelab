@@ -8,12 +8,14 @@ Always confirm the callback in the app or its current official documentation bef
 | Claude (web, desktop, mobile) | Settings → Connectors → Add custom connector → Advanced settings for client ID | `https://claude.ai/api/mcp/auth_callback` and `https://claude.com/api/mcp/auth_callback` (register both) | Public PKCE, or client ID + secret |
 | Claude Code | `claude mcp add --transport http <name> https://<mcp-host>/mcp` then `/mcp` to sign in | Local loopback callback; check `claude mcp add --help` for the fixed callback-port and client-ID options | Public PKCE |
 | Codex | `codex mcp add` / `codex mcp login`; check current `--help` | Local loopback callback shown by Codex | Public PKCE |
-| Grok | grok.com/connectors → New Connector → Custom | Shown in the OAuth credentials dialog | Public PKCE, client ID entered in the dialog |
-| Superhuman Go | Build a Pack with the Packs SDK, release it, then Go → Connectors → Sign in | `https://docs.superhuman.com/packsAuth/oauth2/<pack-id>` (exact value in Pack Settings → Add OAuth credentials) | Usually confidential (client ID + secret) |
+| Grok | grok.com/connectors → New Connector → Custom | Shown in the OAuth credentials dialog | Manual client ID, optional secret, token auth `none` with PKCE |
+| Superhuman Go | Go → Connectors → custom MCP connector form | Shown in the connector's OAuth form | Confidential: client ID **and** secret required |
 
-## Superhuman Go Pack
+Superhuman Go's native connector form (observed November 2026) needs a confidential Authelia client; hand the secret over only through a private channel into that form. A Pack is not required for this flow.
 
-Requires a Superhuman Pro plan or higher and Doc Maker access. A Pack connects to exactly one MCP server:
+## Superhuman Go Pack (alternative)
+
+Use a Pack only if the native form cannot be used. Requires a Superhuman Pro plan or higher and Doc Maker access. Its callback is `https://docs.superhuman.com/packsAuth/oauth2/<pack-id>` (exact value in Pack Settings → Add OAuth credentials). A Pack connects to exactly one MCP server:
 
 ```ts
 import * as sdk from "@codahq/packs-sdk";
