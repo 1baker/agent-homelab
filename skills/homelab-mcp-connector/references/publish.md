@@ -4,9 +4,23 @@ Topology: `Internet → Cloudflare Tunnel → Traefik (127.0.0.1 published port)
 
 Values in angle brackets are site-specific. Keep them in the private inventory, not in this repository.
 
+## Before any live change
+
+Steps 1–3 change shared edge services. Installing this skill grants no authority to make them. Make each change only under an explicit release for a declared node, and through the guarded procedure in `homelab-maintenance` and `homelab-service-ingress` (policy `docs/dev/policies/0003-remote-operations.md`):
+
+- [ ] Declare the target node, SSH alias, config path and the exact apply operation.
+- [ ] Record a baseline: run `scripts/check_mcp_route.py` for any existing MCP routes, check the health of the units you will touch, and capture the current routes.
+- [ ] Back up every file you will edit next to it, with a dated suffix.
+- [ ] Render the change to a staging copy and validate it (`cloudflared tunnel ingress validate`, Traefik config check, `systemd-analyze verify`) before promoting.
+- [ ] Promote atomically, then reload or restart only the unit that owns the file.
+- [ ] Verify with step 4 plus the baseline checks. If any check fails, restore the backup, reload, and report.
+- [ ] Report the node, files, backup paths, validation command, reload result and probe output.
+
+Authelia client changes belong in the issuer owner's single change window (see `authelia-clients.md`). Do not restart Authelia a second time for this procedure.
+
 ## 1. Tunnel hostname
 
-Add one ingress rule before the catch-all in the cloudflared config, then restart cloudflared:
+Add one ingress rule before the catch-all in a staged copy of the cloudflared config, validate it, promote it, then restart cloudflared:
 
 ```yaml
 ingress:
@@ -15,7 +29,7 @@ ingress:
   - service: http_status:404
 ```
 
-Create the DNS route for the tunnel with `cloudflared tunnel route dns <tunnel> <mcp-host>`.
+Create the DNS route for the tunnel with `cloudflared tunnel route dns <tunnel> <mcp-host>`. This changes public DNS, so record the change; roll it back by deleting that DNS record.
 
 ## 2. Bridge socket (host service → container network)
 
