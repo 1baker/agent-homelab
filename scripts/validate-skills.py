@@ -22,6 +22,7 @@ def main() -> int:
         "homelab-bootstrap",
         "homelab-borg-backup",
         "homelab-maintenance",
+        "homelab-mcp-connector",
         "homelab-oauth-relay",
         "homelab-service-catalog",
         "homelab-service-ingress",
