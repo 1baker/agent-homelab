@@ -8,9 +8,16 @@ from typing import Any
 
 import yaml
 
-from .model import Inventory, topology_for
+from . import tunnel_edge
+from .model import Inventory, edge_mode, topology_for
 
 TRAEFIK_IMAGE = "traefik:v3.7.8"
+
+
+class RenderError(ValueError):
+    """Raised when rendered configuration would violate an edge safety invariant."""
+
+
 AUTHELIA_IMAGE = "authelia/authelia:4.39.20"
 
 
@@ -23,9 +30,19 @@ def render_inventory(inventory: Inventory, output_dir: str | Path) -> dict[str, 
     rendered_nodes: dict[str, dict[str, Any]] = {}
     for node_name, node in inventory.nodes.items():
         node_dir = target / "nodes" / node_name
+        if edge_mode(node) == "tunnel":
+            _render_tunnel_node(inventory.data, node_name, node_dir)
+            rendered_nodes[node_name] = {
+                "roles": node["roles"],
+                "services": sorted(_services_for_node(inventory.data, node_name)),
+                "digest": tree_digest(node_dir),
+            }
+            continue
         dynamic = _dynamic_for_node(inventory.data, node_name)
+        static = _static_traefik(node)
+        _check_safety(node_name, static, dynamic)
         _write_yaml(node_dir / "traefik" / "dynamic" / "services.yaml", dynamic)
-        _write_yaml(node_dir / "traefik" / "traefik.yaml", _static_traefik(node))
+        _write_yaml(node_dir / "traefik" / "traefik.yaml", static)
         _write_yaml(node_dir / "compose.yaml", _compose_for_node(inventory.data, node_name))
 
         auth_rules = _authelia_rules(inventory.data, node_name)
@@ -46,6 +63,35 @@ def render_inventory(inventory: Inventory, output_dir: str | Path) -> dict[str, 
     }
     _write_text(target / "manifest.json", json.dumps(manifest, indent=2, sort_keys=True) + "\n")
     return manifest
+
+
+def _check_safety(node_name: str, static: dict[str, Any], dynamic: dict[str, Any]) -> None:
+    problems = tunnel_edge.edge_safety_problems(static, dynamic)
+    if problems:
+        raise RenderError(f"Unsafe edge configuration for node {node_name}:\n- " + "\n- ".join(problems))
+
+
+def _render_tunnel_node(data: dict[str, Any], node_name: str, node_dir: Path) -> None:
+    node = data["nodes"][node_name]
+    static = tunnel_edge.static_config(node)
+    dynamic = tunnel_edge.dynamic_config(data, node_name)
+    _check_safety(node_name, static, dynamic)
+    _write_yaml(node_dir / "traefik" / "traefik.yaml", static)
+    _write_yaml(node_dir / "traefik" / "dynamic" / "services.yaml", dynamic)
+    _write_yaml(node_dir / "compose.yaml", tunnel_edge.compose_document(node, TRAEFIK_IMAGE))
+    serve = tunnel_edge.tailscale_serve(node)
+    if serve:
+        _write_text(node_dir / "tailscale" / "serve.sh", serve)
+    _write_yaml(node_dir / "cloudflared" / "ingress.yml", tunnel_edge.cloudflared_ingress(data, node_name))
+    for unit_name, text in sorted(tunnel_edge.bridge_units(data, node_name).items()):
+        _write_text(node_dir / "systemd" / unit_name, text)
+    _write_text(node_dir / "probes.json", json.dumps(tunnel_edge.route_probes(data, node_name), indent=2) + "\n")
+    rules = tunnel_edge.authelia_access_rules(data, node_name)
+    if rules:
+        # Authelia itself (OIDC clients, MFA, secrets) stays operator-managed; this is the reviewed policy fragment.
+        _write_yaml(
+            node_dir / "authelia" / "access_control.yml", {"access_control": {"default_policy": "deny", "rules": rules}}
+        )
 
 
 def _services_for_node(data: dict[str, Any], node_name: str) -> set[str]:
@@ -124,9 +170,9 @@ def _dynamic_for_node(data: dict[str, Any], node_name: str) -> dict[str, Any]:
                 router["middlewares"] = [middleware_name]
                 middlewares[middleware_name] = {
                     "forwardAuth": {
-                        "address": data["site"].get("authelia", {}).get(
-                            "url", "http://authelia:9091/api/authz/forward-auth"
-                        ),
+                        "address": data["site"]
+                        .get("authelia", {})
+                        .get("url", "http://authelia:9091/api/authz/forward-auth"),
                         "trustForwardHeader": True,
                         "maxResponseBodySize": 1048576,
                         "authResponseHeaders": ["Remote-User", "Remote-Groups", "Remote-Name", "Remote-Email"],

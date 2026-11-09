@@ -1,0 +1,450 @@
+"""Render a Cloudflare-Tunnel edge: cloudflared -> loopback Traefik -> bridges -> host services.
+
+Traefik on a tunnel edge must trust X-Forwarded-* from the cloudflared/Docker hop,
+and that hop forwards whatever the client sent. Every Authelia-protected router
+therefore pins the forwarded host and scheme before forward-auth (see
+``edge_safety_problems``); otherwise a forged X-Forwarded-Host can make Authelia
+evaluate a bypass domain for a protected route.
+"""
+
+from __future__ import annotations
+
+import re
+from typing import Any
+
+AUTHELIA_FORWARD_AUTH = "http://authelia:9091/api/authz/forward-auth"
+AUTH_RESPONSE_HEADERS = ["Remote-User", "Remote-Groups", "Remote-Email", "Remote-Name"]
+IDENTITY_HEADERS = [
+    "Remote-User",
+    "Remote-Groups",
+    "Remote-Email",
+    "Remote-Name",
+    "X-Forwarded-User",
+    "X-Forwarded-Email",
+    "X-Auth-Request-User",
+    "X-Auth-Request-Email",
+]
+CLEARED_FORWARDED = ["X-Forwarded-Uri", "X-Forwarded-Method", "X-Forwarded-Prefix", "X-Forwarded-Port"]
+SECURE_HEADERS = {
+    "contentTypeNosniff": True,
+    "frameDeny": True,
+    "referrerPolicy": "same-origin",
+    "stsIncludeSubdomains": True,
+    "stsSeconds": 31536000,
+}
+OAUTH_METADATA_PATHS = ["/.well-known/oauth-protected-resource", "/.well-known/oauth-protected-resource/mcp"]
+MCP_PATH = "/mcp"
+# Above path routes (100 + index) so a PathPrefix route can never capture the OAuth MCP endpoints.
+MCP_ROUTER_PRIORITY = 900
+
+
+def slug(value: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "-", value.lower()).strip("-")
+
+
+def host_pin_name(hostname: str) -> str:
+    return f"authz-host-{slug(hostname)}"
+
+
+def static_config(node: dict[str, Any]) -> dict[str, Any]:
+    edge = node["edge"]
+    entrypoints = {
+        name: {"address": f":{value['port']}", "forwardedHeaders": {"trustedIPs": list(edge["trusted_ips"])}}
+        for name, value in sorted(edge["entrypoints"].items())
+    }
+    return {
+        "global": {"checkNewVersion": False, "sendAnonymousUsage": False},
+        "api": {"dashboard": bool(edge.get("dashboard"))},
+        "entryPoints": entrypoints,
+        "providers": {"file": {"directory": "/etc/traefik/dynamic", "watch": True}},
+        "ping": {},
+        "log": {"level": "INFO"},
+        "accessLog": {"format": "json"},
+    }
+
+
+def compose_service(node: dict[str, Any], image: str) -> dict[str, Any]:
+    edge = node["edge"]
+    return {
+        "image": image,
+        "restart": "unless-stopped",
+        # Loopback only: cloudflared on the host is the sole client.
+        "ports": [f"127.0.0.1:{v['port']}:{v['port']}" for _, v in sorted(edge["entrypoints"].items())],
+        # A directory mount lets file edits reload without a container restart.
+        "volumes": [
+            "./traefik/traefik.yaml:/etc/traefik/traefik.yaml:ro",
+            "./traefik/dynamic:/etc/traefik/dynamic:ro",
+        ],
+        "healthcheck": {"test": ["CMD", "traefik", "healthcheck", "--ping"], "interval": "30s", "timeout": "5s"},
+        **({"networks": [edge["docker_network"]]} if edge.get("docker_network") else {}),
+    }
+
+
+def compose_document(node: dict[str, Any], image: str) -> dict[str, Any]:
+    edge = node["edge"]
+    compose: dict[str, Any] = {"services": {"traefik": compose_service(node, image)}}
+    if edge.get("docker_network"):
+        # Join the existing network that Authelia and the bridges already use.
+        compose["networks"] = {edge["docker_network"]: {"external": True}}
+    return compose
+
+
+def tailscale_serve(node: dict[str, Any]) -> str:
+    """Commands mapping tailnet HTTPS ports to Traefik entrypoints (tailnet only, never Funnel)."""
+    lines = []
+    for name, value in sorted(node["edge"]["entrypoints"].items()):
+        if value.get("tailnet_https_port"):
+            lines.append(
+                f"tailscale serve --bg --https={value['tailnet_https_port']} http://127.0.0.1:{value['port']}  # {name}"
+            )
+    return "\n".join(lines) + "\n" if lines else ""
+
+
+def bridge_target(upstream: dict[str, Any]) -> str:
+    """Loopback address systemd-socket-proxyd connects to (validation allows 127.0.0.1 and ::1)."""
+    host = upstream["host"]
+    return f"[{host}]:{upstream['port']}" if ":" in host else f"{host}:{upstream['port']}"
+
+
+def _upstream_url(upstream: dict[str, Any], edge: dict[str, Any]) -> str:
+    bridge = upstream.get("bridge")
+    if bridge:
+        return f"http://{edge['docker_gateway']}:{bridge['port']}"
+    return f"{upstream['scheme']}://{upstream['host']}:{upstream['port']}"
+
+
+def _load_balancer(url: str) -> dict[str, Any]:
+    return {"loadBalancer": {"passHostHeader": True, "servers": [{"url": url}]}}
+
+
+def dynamic_config(data: dict[str, Any], node_name: str) -> dict[str, Any]:
+    node = data["nodes"][node_name]
+    edge = node["edge"]
+    rate = edge.get("rate_limit", {"average": 20, "burst": 40})
+    middlewares: dict[str, Any] = {
+        "edge-rate-limit": {
+            "rateLimit": {
+                **rate,
+                "sourceCriterion": {"requestHeaderName": edge.get("client_ip_header", "Cf-Connecting-IP")},
+            }
+        },
+        "edge-strip-identity": {"headers": {"customRequestHeaders": {name: "" for name in IDENTITY_HEADERS}}},
+        "edge-secure-headers": {"headers": dict(edge.get("secure_headers") or SECURE_HEADERS)},
+        "authelia-forward-auth": {
+            "forwardAuth": {
+                "address": edge.get("authelia", {}).get("address", AUTHELIA_FORWARD_AUTH),
+                "trustForwardHeader": True,
+                "maxResponseBodySize": 8192,
+                "authResponseHeaders": list(AUTH_RESPONSE_HEADERS),
+            }
+        },
+    }
+    routers: dict[str, Any] = {
+        "agent-homelab-health": {
+            "rule": "Path(`/.well-known/agent-homelab/health`)",
+            "entryPoints": sorted(edge["entrypoints"]),
+            "service": "ping@internal",
+            "priority": 1000,
+        }
+    }
+    services: dict[str, Any] = {}
+
+    def protected_chain(hostname: str, headers_name: str) -> list[str]:
+        pin = host_pin_name(hostname)
+        middlewares[pin] = {
+            "headers": {
+                "customRequestHeaders": {
+                    "X-Forwarded-Host": hostname,
+                    "X-Forwarded-Proto": "https",
+                    **{name: "" for name in CLEARED_FORWARDED},
+                }
+            }
+        }
+        return ["edge-rate-limit", "edge-strip-identity", pin, "authelia-forward-auth", headers_name]
+
+    def suffix(hostname: str, primary: str) -> str:
+        return "" if hostname == primary else f"-{slug(hostname)}"
+
+    authelia = edge.get("authelia")
+    if authelia:
+        services["authelia"] = _load_balancer("http://authelia:9091")
+        for host in [authelia["hostname"], *authelia.get("aliases", [])]:
+            routers[f"authelia{suffix(host, authelia['hostname'])}"] = {
+                "rule": f"Host(`{host}`)",
+                "entryPoints": [authelia["entrypoint"]],
+                "service": "authelia",
+                "middlewares": ["edge-rate-limit", "edge-secure-headers"],
+            }
+    dashboard = edge.get("dashboard")
+    if dashboard:
+        for host in [dashboard["hostname"], *dashboard.get("aliases", [])]:
+            routers[f"traefik-dashboard{suffix(host, dashboard['hostname'])}"] = {
+                "rule": f"Host(`{host}`)",
+                "entryPoints": [dashboard["entrypoint"]],
+                "service": "api@internal",
+                "middlewares": protected_chain(host, "edge-secure-headers"),
+            }
+
+    for name, service in sorted(data["services"].items()):
+        public = service.get("public", {})
+        if not public.get("enabled") or public.get("edge_node") != node_name:
+            continue
+        hostname = public["hostname"]
+        entrypoint = public["entrypoint"]
+        policy = public.get("auth", {}).get("policy")
+        protected = public.get("auth", {}).get("provider") == "authelia" and policy != "bypass"
+
+        def headers_middleware(key: str, options: dict[str, Any] | None) -> str:
+            if not options:
+                return "edge-secure-headers"
+            middlewares[key] = {"headers": options}
+            return key
+
+        services[f"{name}-edge"] = _load_balancer(_upstream_url(service["upstream"], edge))
+        headers_name = headers_middleware(f"{name}-headers", public.get("headers"))
+        # Aliases (e.g. a tailnet-only name) get their own routers and their own host pin.
+        for host in [hostname, *public.get("aliases", [])]:
+            tag = suffix(host, hostname)
+            chain = (
+                protected_chain(host, headers_name)
+                if protected
+                else ["edge-rate-limit", "edge-strip-identity", headers_name]
+            )
+            routers[f"{name}-public{tag}"] = {
+                "rule": f"Host(`{host}`)",
+                "entryPoints": [entrypoint],
+                "service": f"{name}-edge",
+                "middlewares": chain,
+            }
+            for index, route in enumerate(service.get("path_routes", [])):
+                key = f"{name}-{route['name']}"
+                services[f"{key}-edge"] = _load_balancer(_upstream_url(route["upstream"], edge))
+                route_headers = headers_middleware(f"{key}-headers", route.get("headers"))
+                base = (
+                    protected_chain(host, route_headers)
+                    if protected
+                    else ["edge-rate-limit", "edge-strip-identity", route_headers]
+                )
+                routers[f"{key}-public{tag}"] = {
+                    "rule": f"Host(`{host}`) && PathPrefix(`{route['path_prefix']}`)",
+                    "entryPoints": [entrypoint],
+                    "service": f"{key}-edge",
+                    "priority": 100 + index,
+                    "middlewares": base + list(route.get("middlewares", [])),
+                }
+        for auth_name, definition in sorted(service.get("forward_auth", {}).items()):
+            middlewares[auth_name] = {
+                "forwardAuth": {
+                    "address": definition["address"],
+                    "trustForwardHeader": definition.get("trust_forward_header", True),
+                    "maxResponseBodySize": 1048576,
+                    "authResponseHeaders": definition.get("auth_response_headers", []),
+                }
+            }
+        mcp = public.get("oauth_mcp")
+        if mcp:
+            services[f"{name}-mcp"] = _load_balancer(_upstream_url(mcp["upstream"], edge))
+            metadata = " || ".join(f"Path(`{path}`)" for path in OAUTH_METADATA_PATHS)
+            for host in [hostname, *public.get("aliases", [])]:
+                tag = suffix(host, hostname)
+                routers[f"{name}-oauth-metadata{tag}"] = {
+                    "rule": f"Host(`{host}`) && ({metadata})",
+                    "entryPoints": [entrypoint],
+                    "service": f"{name}-mcp",
+                    "priority": MCP_ROUTER_PRIORITY,
+                    "middlewares": ["edge-rate-limit", "edge-strip-identity", "edge-secure-headers"],
+                }
+                routers[f"{name}-oauth-mcp{tag}"] = {
+                    "rule": f"Host(`{host}`) && Path(`{MCP_PATH}`)",
+                    "entryPoints": [entrypoint],
+                    "service": f"{name}-mcp",
+                    "priority": MCP_ROUTER_PRIORITY,
+                    "middlewares": ["edge-rate-limit", "edge-strip-identity", "edge-secure-headers"],
+                }
+
+    return {"http": {"routers": routers, "services": services, "middlewares": middlewares}}
+
+
+def cloudflared_ingress(data: dict[str, Any], node_name: str) -> dict[str, Any]:
+    """Ingress rules only; tunnel identity and credentials stay in the private host config."""
+    edge = data["nodes"][node_name]["edge"]
+    ports = {name: value["port"] for name, value in edge["entrypoints"].items()}
+    hosts: dict[str, int] = {}
+    for key in ("authelia", "dashboard"):
+        if edge.get(key):
+            hosts[edge[key]["hostname"]] = ports[edge[key]["entrypoint"]]
+    for service in data["services"].values():
+        public = service.get("public", {})
+        if public.get("enabled") and public.get("edge_node") == node_name:
+            hosts[public["hostname"]] = ports[public["entrypoint"]]
+    rules = [{"hostname": host, "service": f"http://127.0.0.1:{port}"} for host, port in sorted(hosts.items())]
+    return {"ingress": [*rules, {"service": "http_status:404"}]}
+
+
+def bridge_units(data: dict[str, Any], node_name: str) -> dict[str, str]:
+    """systemd user socket/service pairs exposing host-loopback services on the Docker gateway."""
+    edge = data["nodes"][node_name]["edge"]
+    upstreams = []
+    for service in data["services"].values():
+        upstreams.append(service["upstream"])
+        upstreams += [route["upstream"] for route in service.get("path_routes", [])]
+        if service.get("public", {}).get("oauth_mcp"):
+            upstreams.append(service["public"]["oauth_mcp"]["upstream"])
+    units: dict[str, str] = {}
+    for upstream in upstreams:
+        bridge = upstream.get("bridge")
+        if not bridge or upstream["node"] != node_name:
+            continue
+        name = bridge.get("unit_name", f"agent-homelab-bridge-{bridge['port']}")
+        requires = bridge.get("requires_unit")
+        unit_deps = f"Requires={requires}\nAfter={requires}\n" if requires else ""
+        units[f"{name}.socket"] = (
+            "[Unit]\n"
+            f"Description=Agent Homelab bridge {edge['docker_gateway']}:{bridge['port']}"
+            f" -> {bridge_target(upstream)}\n\n"
+            "[Socket]\n"
+            f"ListenStream={edge['docker_gateway']}:{bridge['port']}\n"
+            "# The Docker gateway address appears after boot; without FreeBind the socket fails permanently.\n"
+            "FreeBind=yes\n"
+            "NoDelay=true\n"
+            f"Service={name}.service\n\n"
+            "[Install]\nWantedBy=sockets.target\n"
+        )
+        units[f"{name}.service"] = (
+            "[Unit]\n"
+            f"Description=Agent Homelab bridge proxy to {bridge_target(upstream)}\n"
+            f"{unit_deps}\n"
+            "[Service]\n"
+            f"ExecStart=/usr/lib/systemd/systemd-socket-proxyd {bridge_target(upstream)}\n"
+            "NoNewPrivileges=yes\nPrivateTmp=yes\n"
+        )
+    return units
+
+
+def route_probes(data: dict[str, Any], node_name: str) -> list[dict[str, Any]]:
+    """Unauthenticated probes for every public host and path route, including forged-header bypass checks.
+
+    Each probe names the entrypoint it targets so it can also run against a local Traefik.
+    Alias hosts are probed through their tailnet HTTPS port and are skipped when none is declared.
+    """
+    edge = data["nodes"][node_name]["edge"]
+    entrypoints = edge["entrypoints"]
+    auth_host = edge.get("authelia", {}).get("hostname")
+    probes: list[dict[str, Any]] = []
+
+    def base_url(host: str, entrypoint: str, primary: bool) -> str | None:
+        if primary:
+            return f"https://{host}"
+        port = entrypoints[entrypoint].get("tailnet_https_port")
+        if not port:
+            return None
+        return f"https://{host}" if port == 443 else f"https://{host}:{port}"
+
+    def add(name: str, url: str, entrypoint: str, expect: list[int], **extra: Any) -> None:
+        probes.append({"name": name, "url": url, "entrypoint": entrypoint, "method": "GET", "expect": expect, **extra})
+
+    def protected(name: str, host: str, entrypoint: str, primary: bool, paths: list[str]) -> None:
+        base = base_url(host, entrypoint, primary)
+        if base is None:
+            return
+        label = name if primary else f"{name}-{slug(host)}"
+        for path in paths:
+            where = label if path == "/" else f"{label}-{slug(path)}"
+            add(f"{where}-requires-sign-in", f"{base}{path}", entrypoint, [302, 401])
+            if auth_host:
+                add(
+                    f"{where}-forged-forwarded-host",
+                    f"{base}{path}",
+                    entrypoint,
+                    [302, 401],
+                    headers={"X-Forwarded-Host": auth_host},
+                )
+
+    authelia = edge.get("authelia")
+    if authelia:
+        add("authelia", f"https://{authelia['hostname']}/", authelia["entrypoint"], [200])
+    dashboard = edge.get("dashboard")
+    if dashboard:
+        for index, host in enumerate([dashboard["hostname"], *dashboard.get("aliases", [])]):
+            protected("traefik-dashboard", host, dashboard["entrypoint"], index == 0, ["/"])
+    for name, service in sorted(data["services"].items()):
+        public = service.get("public", {})
+        if not public.get("enabled") or public.get("edge_node") != node_name:
+            continue
+        auth = public.get("auth", {})
+        hosts = [public["hostname"], *public.get("aliases", [])]
+        paths = ["/", *(route["path_prefix"].rstrip("/") + "/" for route in service.get("path_routes", []))]
+        for index, host in enumerate(hosts):
+            if auth.get("provider") == "authelia" and auth.get("policy") != "bypass":
+                protected(name, host, public["entrypoint"], index == 0, paths)
+            if public.get("oauth_mcp"):
+                base = base_url(host, public["entrypoint"], index == 0)
+                if base is None:
+                    continue
+                label = name if index == 0 else f"{name}-{slug(host)}"
+                add(f"{label}-mcp-metadata", f"{base}{OAUTH_METADATA_PATHS[1]}", public["entrypoint"], [200])
+                add(
+                    f"{label}-mcp-challenge",
+                    f"{base}{MCP_PATH}",
+                    public["entrypoint"],
+                    [401],
+                    method="POST",
+                    body="{}",
+                    headers={"Content-Type": "application/json"},
+                )
+    return probes
+
+
+def authelia_access_rules(data: dict[str, Any], node_name: str) -> list[dict[str, str]]:
+    edge = data["nodes"][node_name]["edge"]
+    rules: dict[str, str] = {}
+    # Later entries win: a host shared by the portal and a protected route gets the route's policy.
+    if edge.get("authelia"):
+        for host in [edge["authelia"]["hostname"], *edge["authelia"].get("aliases", [])]:
+            rules[host] = "bypass"
+    if edge.get("dashboard"):
+        for host in [edge["dashboard"]["hostname"], *edge["dashboard"].get("aliases", [])]:
+            rules[host] = "two_factor"
+    for service in data["services"].values():
+        public = service.get("public", {})
+        auth = public.get("auth", {})
+        if public.get("enabled") and public.get("edge_node") == node_name and auth.get("provider") == "authelia":
+            for host in [public["hostname"], *public.get("aliases", [])]:
+                rules[host] = auth["policy"]
+    return [{"domain": domain, "policy": policy} for domain, policy in sorted(rules.items())]
+
+
+def edge_safety_problems(static: dict[str, Any], dynamic: dict[str, Any]) -> list[str]:
+    """Every forward-auth router on an entrypoint that trusts forwarded headers must pin the host first."""
+    trusting = {
+        name
+        for name, entrypoint in static.get("entryPoints", {}).items()
+        if entrypoint.get("forwardedHeaders", {}).get("trustedIPs")
+        or entrypoint.get("forwardedHeaders", {}).get("insecure")
+    }
+    http = dynamic.get("http", {})
+    middlewares = http.get("middlewares", {})
+    problems: list[str] = []
+    for router_name, router in http.get("routers", {}).items():
+        if not trusting.intersection(router.get("entryPoints", [])):
+            continue
+        chain = router.get("middlewares", [])
+        hosts = re.findall(r"Host\(`([^`]+)`\)", router.get("rule", ""))
+        for index, middleware in enumerate(chain):
+            if "forwardAuth" not in middlewares.get(middleware, {}):
+                continue
+            if len(hosts) != 1:
+                problems.append(f"{router_name}: forward-auth router must match exactly one Host")
+                break
+            pinned = False
+            for earlier in chain[:index]:
+                headers = middlewares.get(earlier, {}).get("headers", {}).get("customRequestHeaders", {})
+                if (
+                    headers.get("X-Forwarded-Host") == hosts[0]
+                    and headers.get("X-Forwarded-Proto") == "https"
+                    and all(headers.get(name) == "" for name in CLEARED_FORWARDED)
+                ):
+                    pinned = True
+            if not pinned:
+                problems.append(f"{router_name}: {middleware} runs without pinning X-Forwarded-Host to {hosts[0]}")
+    return problems

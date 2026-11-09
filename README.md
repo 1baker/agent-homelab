@@ -1,12 +1,13 @@
 # Agent Homelab
 
-Agent Homelab turns one privacy-safe inventory into Traefik and Authelia configuration for a single host or a service host relayed through a separate edge gateway. It includes a Python CLI, a sanitized service catalog, guarded Borg backups, and eight agent skills for setup and operations.
+Agent Homelab turns one privacy-safe inventory into Traefik and Authelia configuration for a single host, a service host relayed through a separate edge gateway, or a home server behind a Cloudflare Tunnel. It includes a Python CLI, a sanitized service catalog, guarded Borg backups, and eight agent skills for setup and operations.
 
 ## Supported topology
 
 ```text
 Direct: Internet -> edge Traefik -> local service
 Relay:  Internet -> edge Traefik -> service-host Traefik -> service
+Tunnel: Internet -> Cloudflare -> cloudflared -> loopback Traefik -> bridge socket -> host service
                          |
                          +-> Authelia for protected routes
 ```
@@ -101,6 +102,7 @@ Copy a skill directory into the skill location used by your agent, or let the ag
 - [Borg backups](docs/guides/borg-backups.md)
 - [Direct-host setup](docs/guides/direct-host.md)
 - [Bastion relay](docs/guides/bastion-relay.md)
+- [Cloudflare Tunnel edge](docs/guides/tunnel-edge.md)
 - [Authelia](docs/guides/authentication.md)
 - [OAuth relay](docs/guides/oauth-relay.md)
 - [Disaster recovery](docs/guides/disaster-recovery.md)

@@ -23,6 +23,7 @@ Copy and track:
 - [ ] Upsert the inventory with node, port, `port_source`, local host, public host, edge node, and auth policy.
 - [ ] Validate the entire inventory.
 - [ ] Render and inspect origin, edge, and Authelia output.
+- [ ] On a Cloudflare Tunnel edge (`edge.mode: tunnel`), give a loopback upstream a `bridge` port and pick a tunnel `entrypoint`; check that `probes.json` includes the forged-forwarded-host probe for every protected host, and that `agent-homelab verify` passes it after install.
 - [ ] Run node plans and dry-runs before apply.
 - [ ] Apply the service host before the edge gateway in relay mode.
 - [ ] Probe the origin with the public Host header.
