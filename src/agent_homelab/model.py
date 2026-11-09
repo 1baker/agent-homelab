@@ -183,6 +183,7 @@ def _tunnel_edge_errors(data: dict[str, Any]) -> list[str]:
                         claim_host(node_name, block["entrypoint"], host, f"nodes.{node_name}.edge.{key}")
 
     bridge_ports: dict[tuple[str, int], tuple[Any, ...]] = {}
+    unit_ports: dict[tuple[str, str], int] = {}
     for service_name, service in data["services"].items():
         public = service.get("public", {})
         edge_node = nodes.get(public.get("edge_node", ""), {})
@@ -193,7 +194,18 @@ def _tunnel_edge_errors(data: dict[str, Any]) -> list[str]:
             for i, r in enumerate(service.get("path_routes", []))
         ]
         if public.get("oauth_mcp"):
-            upstreams.append((f"services.{service_name}.public.oauth_mcp.upstream", public["oauth_mcp"]["upstream"]))
+            mcp_path = f"services.{service_name}.public.oauth_mcp.upstream"
+            upstreams.append((mcp_path, public["oauth_mcp"]["upstream"]))
+            # Same node/port/authority rules as every other upstream.
+            _check_upstream(public["oauth_mcp"]["upstream"], mcp_path, nodes, problems)
+            reserved = ["/mcp", "/.well-known/oauth-protected-resource"]
+            for i, route in enumerate(service.get("path_routes", [])):
+                prefix = route["path_prefix"]
+                if any(r.startswith(prefix) or prefix.startswith(r) for r in reserved):
+                    problems.append(
+                        f"services.{service_name}.path_routes.{i}.path_prefix: {prefix!r} overlaps the OAuth MCP "
+                        "endpoints (/mcp, /.well-known/oauth-protected-resource)"
+                    )
             if not tunnel:
                 problems.append(f"services.{service_name}.public.oauth_mcp: supported only on a tunnel edge")
         if public.get("aliases") and not tunnel:
@@ -206,11 +218,11 @@ def _tunnel_edge_errors(data: dict[str, Any]) -> list[str]:
                 problems.append(
                     f"services.{service_name}.public.entrypoint: must name a tunnel entrypoint, got {entrypoint!r}"
                 )
-            if service["upstream"]["node"] != public["edge_node"]:
-                problems.append(
-                    f"services.{service_name}.upstream.node: tunnel edges serve their own node; "
-                    "relay a remote service to it first"
-                )
+            for path, upstream in upstreams:
+                if upstream["node"] != public["edge_node"]:
+                    problems.append(
+                        f"{path}.node: tunnel edges serve their own node; relay a remote service to it first"
+                    )
         for path, upstream in upstreams:
             bridge = upstream.get("bridge")
             loopback = upstream["host"] in ("127.0.0.1", "localhost", "::1")
@@ -218,7 +230,16 @@ def _tunnel_edge_errors(data: dict[str, Any]) -> list[str]:
                 problems.append(f"{path}.bridge: a loopback upstream needs a bridge socket on a tunnel edge")
             if bridge and not tunnel:
                 problems.append(f"{path}.bridge: bridges are rendered only for tunnel edges")
+            if bridge and (upstream["scheme"] != "http" or upstream["host"] not in ("127.0.0.1", "::1")):
+                problems.append(
+                    f"{path}.bridge: bridges proxy plain HTTP to 127.0.0.1 or ::1 only; "
+                    f"got {upstream['scheme']}://{upstream['host']}"
+                )
             if bridge:
+                unit = bridge.get("unit_name", f"agent-homelab-bridge-{bridge['port']}")
+                previous = unit_ports.setdefault((upstream["node"], unit), bridge["port"])
+                if previous != bridge["port"]:
+                    problems.append(f"{path}.bridge.unit_name: {unit!r} is already used for bridge port {previous}")
                 key = (upstream["node"], bridge["port"])
                 owner = (upstream["host"], upstream["port"])
                 owner = (*owner, bridge.get("unit_name"))

@@ -33,6 +33,9 @@ SECURE_HEADERS = {
     "stsSeconds": 31536000,
 }
 OAUTH_METADATA_PATHS = ["/.well-known/oauth-protected-resource", "/.well-known/oauth-protected-resource/mcp"]
+MCP_PATH = "/mcp"
+# Above path routes (100 + index) so a PathPrefix route can never capture the OAuth MCP endpoints.
+MCP_ROUTER_PRIORITY = 900
 
 
 def slug(value: str) -> str:
@@ -95,6 +98,12 @@ def tailscale_serve(node: dict[str, Any]) -> str:
                 f"tailscale serve --bg --https={value['tailnet_https_port']} http://127.0.0.1:{value['port']}  # {name}"
             )
     return "\n".join(lines) + "\n" if lines else ""
+
+
+def bridge_target(upstream: dict[str, Any]) -> str:
+    """Loopback address systemd-socket-proxyd connects to (validation allows 127.0.0.1 and ::1)."""
+    host = upstream["host"]
+    return f"[{host}]:{upstream['port']}" if ":" in host else f"{host}:{upstream['port']}"
 
 
 def _upstream_url(upstream: dict[str, Any], edge: dict[str, Any]) -> str:
@@ -236,18 +245,22 @@ def dynamic_config(data: dict[str, Any], node_name: str) -> dict[str, Any]:
         if mcp:
             services[f"{name}-mcp"] = _load_balancer(_upstream_url(mcp["upstream"], edge))
             metadata = " || ".join(f"Path(`{path}`)" for path in OAUTH_METADATA_PATHS)
-            routers[f"{name}-oauth-metadata"] = {
-                "rule": f"Host(`{hostname}`) && ({metadata})",
-                "entryPoints": [entrypoint],
-                "service": f"{name}-mcp",
-                "middlewares": ["edge-rate-limit", "edge-strip-identity", "edge-secure-headers"],
-            }
-            routers[f"{name}-oauth-mcp"] = {
-                "rule": f"Host(`{hostname}`) && Path(`/mcp`)",
-                "entryPoints": [entrypoint],
-                "service": f"{name}-mcp",
-                "middlewares": ["edge-rate-limit", "edge-strip-identity", "edge-secure-headers"],
-            }
+            for host in [hostname, *public.get("aliases", [])]:
+                tag = suffix(host, hostname)
+                routers[f"{name}-oauth-metadata{tag}"] = {
+                    "rule": f"Host(`{host}`) && ({metadata})",
+                    "entryPoints": [entrypoint],
+                    "service": f"{name}-mcp",
+                    "priority": MCP_ROUTER_PRIORITY,
+                    "middlewares": ["edge-rate-limit", "edge-strip-identity", "edge-secure-headers"],
+                }
+                routers[f"{name}-oauth-mcp{tag}"] = {
+                    "rule": f"Host(`{host}`) && Path(`{MCP_PATH}`)",
+                    "entryPoints": [entrypoint],
+                    "service": f"{name}-mcp",
+                    "priority": MCP_ROUTER_PRIORITY,
+                    "middlewares": ["edge-rate-limit", "edge-strip-identity", "edge-secure-headers"],
+                }
 
     return {"http": {"routers": routers, "services": services, "middlewares": middlewares}}
 
@@ -288,7 +301,7 @@ def bridge_units(data: dict[str, Any], node_name: str) -> dict[str, str]:
         units[f"{name}.socket"] = (
             "[Unit]\n"
             f"Description=Agent Homelab bridge {edge['docker_gateway']}:{bridge['port']}"
-            f" -> 127.0.0.1:{upstream['port']}\n\n"
+            f" -> {bridge_target(upstream)}\n\n"
             "[Socket]\n"
             f"ListenStream={edge['docker_gateway']}:{bridge['port']}\n"
             "# The Docker gateway address appears after boot; without FreeBind the socket fails permanently.\n"
@@ -299,66 +312,86 @@ def bridge_units(data: dict[str, Any], node_name: str) -> dict[str, str]:
         )
         units[f"{name}.service"] = (
             "[Unit]\n"
-            f"Description=Agent Homelab bridge proxy to 127.0.0.1:{upstream['port']}\n"
+            f"Description=Agent Homelab bridge proxy to {bridge_target(upstream)}\n"
             f"{unit_deps}\n"
             "[Service]\n"
-            f"ExecStart=/usr/lib/systemd/systemd-socket-proxyd 127.0.0.1:{upstream['port']}\n"
+            f"ExecStart=/usr/lib/systemd/systemd-socket-proxyd {bridge_target(upstream)}\n"
             "NoNewPrivileges=yes\nPrivateTmp=yes\n"
         )
     return units
 
 
 def route_probes(data: dict[str, Any], node_name: str) -> list[dict[str, Any]]:
-    """Unauthenticated public probes, including a forged-forwarded-host bypass check."""
+    """Unauthenticated probes for every public host and path route, including forged-header bypass checks.
+
+    Each probe names the entrypoint it targets so it can also run against a local Traefik.
+    Alias hosts are probed through their tailnet HTTPS port and are skipped when none is declared.
+    """
     edge = data["nodes"][node_name]["edge"]
+    entrypoints = edge["entrypoints"]
     auth_host = edge.get("authelia", {}).get("hostname")
     probes: list[dict[str, Any]] = []
-    if auth_host:
-        probes.append({"name": "authelia", "url": f"https://{auth_host}/", "method": "GET", "expect": [200]})
 
-    def protected(name: str, hostname: str) -> None:
-        url = f"https://{hostname}/"
-        probes.append({"name": f"{name}-requires-sign-in", "url": url, "method": "GET", "expect": [302, 401]})
-        if auth_host:
-            probes.append(
-                {
-                    "name": f"{name}-forged-forwarded-host",
-                    "url": url,
-                    "method": "GET",
-                    "headers": {"X-Forwarded-Host": auth_host},
-                    "expect": [302, 401],
-                }
-            )
+    def base_url(host: str, entrypoint: str, primary: bool) -> str | None:
+        if primary:
+            return f"https://{host}"
+        port = entrypoints[entrypoint].get("tailnet_https_port")
+        if not port:
+            return None
+        return f"https://{host}" if port == 443 else f"https://{host}:{port}"
 
-    if edge.get("dashboard"):
-        protected("traefik-dashboard", edge["dashboard"]["hostname"])
+    def add(name: str, url: str, entrypoint: str, expect: list[int], **extra: Any) -> None:
+        probes.append({"name": name, "url": url, "entrypoint": entrypoint, "method": "GET", "expect": expect, **extra})
+
+    def protected(name: str, host: str, entrypoint: str, primary: bool, paths: list[str]) -> None:
+        base = base_url(host, entrypoint, primary)
+        if base is None:
+            return
+        label = name if primary else f"{name}-{slug(host)}"
+        for path in paths:
+            where = label if path == "/" else f"{label}-{slug(path)}"
+            add(f"{where}-requires-sign-in", f"{base}{path}", entrypoint, [302, 401])
+            if auth_host:
+                add(
+                    f"{where}-forged-forwarded-host",
+                    f"{base}{path}",
+                    entrypoint,
+                    [302, 401],
+                    headers={"X-Forwarded-Host": auth_host},
+                )
+
+    authelia = edge.get("authelia")
+    if authelia:
+        add("authelia", f"https://{authelia['hostname']}/", authelia["entrypoint"], [200])
+    dashboard = edge.get("dashboard")
+    if dashboard:
+        for index, host in enumerate([dashboard["hostname"], *dashboard.get("aliases", [])]):
+            protected("traefik-dashboard", host, dashboard["entrypoint"], index == 0, ["/"])
     for name, service in sorted(data["services"].items()):
         public = service.get("public", {})
         if not public.get("enabled") or public.get("edge_node") != node_name:
             continue
         auth = public.get("auth", {})
-        if auth.get("provider") == "authelia" and auth.get("policy") != "bypass":
-            protected(name, public["hostname"])
-        if public.get("oauth_mcp"):
-            base = f"https://{public['hostname']}"
-            probes.append(
-                {
-                    "name": f"{name}-mcp-metadata",
-                    "url": f"{base}{OAUTH_METADATA_PATHS[1]}",
-                    "method": "GET",
-                    "expect": [200],
-                }
-            )
-            probes.append(
-                {
-                    "name": f"{name}-mcp-challenge",
-                    "url": f"{base}/mcp",
-                    "method": "POST",
-                    "body": "{}",
-                    "headers": {"Content-Type": "application/json"},
-                    "expect": [401],
-                }
-            )
+        hosts = [public["hostname"], *public.get("aliases", [])]
+        paths = ["/", *(route["path_prefix"].rstrip("/") + "/" for route in service.get("path_routes", []))]
+        for index, host in enumerate(hosts):
+            if auth.get("provider") == "authelia" and auth.get("policy") != "bypass":
+                protected(name, host, public["entrypoint"], index == 0, paths)
+            if public.get("oauth_mcp"):
+                base = base_url(host, public["entrypoint"], index == 0)
+                if base is None:
+                    continue
+                label = name if index == 0 else f"{name}-{slug(host)}"
+                add(f"{label}-mcp-metadata", f"{base}{OAUTH_METADATA_PATHS[1]}", public["entrypoint"], [200])
+                add(
+                    f"{label}-mcp-challenge",
+                    f"{base}{MCP_PATH}",
+                    public["entrypoint"],
+                    [401],
+                    method="POST",
+                    body="{}",
+                    headers={"Content-Type": "application/json"},
+                )
     return probes
 
 

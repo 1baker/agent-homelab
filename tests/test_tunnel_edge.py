@@ -203,3 +203,101 @@ def test_aliases_require_a_tunnel_edge() -> None:
     data["services"]["photos"]["public"]["aliases"] = ["photos.tailnet.example"]
     with pytest.raises(InventoryError, match="aliases: supported only on a tunnel edge"):
         validate_inventory(data)
+
+
+# Native review corrections (agent-homelab PR #2 at 53a55ecf).
+
+
+@pytest.mark.parametrize(
+    ("mutate", "message"),
+    [
+        (lambda d: d["services"]["notes"]["public"]["oauth_mcp"]["upstream"].update(node="ghost"), "unknown node"),
+        (
+            lambda d: d["services"]["notes"]["public"]["oauth_mcp"]["upstream"].update(port=40000),
+            "usual ephemeral range",
+        ),
+        (
+            lambda d: d["services"]["notes"]["public"]["oauth_mcp"]["upstream"].update(port_source="   "),
+            "durable runtime port authority",
+        ),
+    ],
+)
+def test_oauth_mcp_upstream_gets_the_standard_upstream_checks(mutate, message: str) -> None:
+    with pytest.raises(InventoryError, match=message):
+        validate_inventory(_mutated(mutate))
+
+
+def _add_notes_path(prefix: str):
+    def mutate(d: dict) -> None:
+        upstream = dict(d["services"]["notes"]["upstream"])
+        d["services"]["notes"]["path_routes"] = [{"name": "extra", "path_prefix": prefix, "upstream": upstream}]
+
+    return mutate
+
+
+@pytest.mark.parametrize("prefix", ["/mcp", "/m", "/", "/.well-known", "/mcp/sub"])
+def test_path_routes_overlapping_oauth_mcp_endpoints_are_rejected(prefix: str) -> None:
+    with pytest.raises(InventoryError, match="overlaps the OAuth MCP endpoints"):
+        validate_inventory(_mutated(_add_notes_path(prefix)))
+
+
+def test_oauth_mcp_routers_outrank_path_routes_and_cover_aliases() -> None:
+    data = _mutated(_add_notes_path("/docs"))
+    data["services"]["notes"]["public"]["aliases"] = ["notes.tailnet.example"]
+    validate_inventory(data)
+    routers = dynamic_config(data, "edge")["http"]["routers"]
+    path_priority = routers["notes-extra-public"]["priority"]
+    for name in (
+        "notes-oauth-mcp",
+        "notes-oauth-metadata",
+        "notes-oauth-mcp-notes-tailnet-example",
+        "notes-oauth-metadata-notes-tailnet-example",
+    ):
+        assert routers[name]["priority"] > path_priority
+        assert "authelia-forward-auth" not in routers[name]["middlewares"]
+    assert routers["notes-oauth-mcp-notes-tailnet-example"]["rule"] == "Host(`notes.tailnet.example`) && Path(`/mcp`)"
+
+
+@pytest.mark.parametrize(
+    ("change", "message"),
+    [
+        ({"scheme": "https"}, "plain HTTP to 127.0.0.1 or ::1 only"),
+        ({"host": "localhost"}, "plain HTTP to 127.0.0.1 or ::1 only"),
+    ],
+)
+def test_bridges_reject_semantics_they_cannot_preserve(change: dict, message: str) -> None:
+    with pytest.raises(InventoryError, match=message):
+        validate_inventory(_mutated(lambda d: d["services"]["notes"]["public"]["oauth_mcp"]["upstream"].update(change)))
+
+
+def test_ipv6_loopback_bridge_targets_the_declared_address(tmp_path: Path) -> None:
+    data = _mutated(lambda d: d["services"]["notes"]["public"]["oauth_mcp"]["upstream"].update(host="::1"))
+    validate_inventory(data)
+    from agent_homelab.tunnel_edge import bridge_units
+
+    service = bridge_units(data, "edge")["agent-homelab-bridge-19111.service"]
+    assert "ExecStart=/usr/lib/systemd/systemd-socket-proxyd [::1]:19110" in service
+
+
+def test_one_unit_name_cannot_serve_two_bridge_ports() -> None:
+    def mutate(d: dict) -> None:
+        d["services"]["notes"]["public"]["oauth_mcp"]["upstream"]["bridge"]["unit_name"] = "home-relay-bridge"
+
+    with pytest.raises(InventoryError, match="'home-relay-bridge' is already used for bridge port 19081"):
+        validate_inventory(_mutated(mutate))
+
+
+def test_probes_cover_path_routes_and_reachable_aliases() -> None:
+    from agent_homelab.tunnel_edge import route_probes
+
+    data = load_inventory(FIXTURES / "tunnel.yaml").data
+    probes = {p["name"]: p for p in route_probes(data, "edge")}
+    path = probes["browser-guacamole-forged-forwarded-host"]
+    assert path["url"] == "https://browser.example.net/guacamole/" and path["entrypoint"] == "apps"
+    alias = probes["browser-edge-tailnet-example-guacamole-forged-forwarded-host"]
+    assert alias["url"] == "https://edge.tailnet.example:10000/guacamole/"
+    assert probes["browser-edge-tailnet-example-requires-sign-in"]["url"] == "https://edge.tailnet.example:10000/"
+    # The dashboard has no tailnet port and no alias, so nothing unreachable is emitted.
+    assert not [name for name in probes if "tailnet" in name and name.startswith("traefik")]
+    for probe in probes.values():
+        assert probe["entrypoint"] in data["nodes"]["edge"]["edge"]["entrypoints"]

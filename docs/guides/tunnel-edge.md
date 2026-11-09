@@ -73,6 +73,19 @@ Optional settings:
 
 A hostname may appear only once per entrypoint across the portal, dashboard, services and aliases.
 
+Limits checked at validation:
+- **Bridges are plain TCP proxies.** A bridged upstream must be `http` on `127.0.0.1` or `::1`.
+- **MCP endpoints are reserved.** With `oauth_mcp`, no path route may overlap `/mcp` or `/.well-known/oauth-protected-resource`. The MCP routers also carry a higher priority than path routes and are rendered for every alias.
+- **One unit name per bridge.** A unit name belongs to exactly one bridge port.
+- **One node.** Every upstream on a tunnel edge (service, path route and MCP) must run on the edge node itself.
+
+## Schema compatibility
+
+This is a backward-compatible extension of inventory `schema_version: 1`, so there is no version bump and no migration:
+- **Optional.** Every new field is optional, and `edge.mode` defaults to `direct`.
+- **Unchanged output.** Existing direct and relay inventories validate and render byte-for-byte as before.
+- **Downgrade.** An inventory that uses `edge`, `bridge`, `oauth_mcp`, `aliases` or `x-*` keys is rejected by older agent-homelab releases, which use a strict schema. Keep such inventories on this release or later.
+
 ## What `render` produces for a tunnel node
 
 | File | Purpose |
