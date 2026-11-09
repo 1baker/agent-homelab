@@ -13,12 +13,13 @@ nodes:
       mode: tunnel
       trusted_ips: [127.0.0.1/32, 198.51.100.1/32]
       docker_gateway: 198.51.100.1
+      docker_network: edge_proxy
       rate_limit: {average: 20, burst: 40}
       entrypoints:
         auth: {port: 9080}
         dashboard: {port: 9081}
-        apps: {port: 9082}
-      authelia: {hostname: auth.example.net, entrypoint: auth}
+        apps: {port: 9082, tailnet_https_port: 10000}
+      authelia: {hostname: auth.example.net, entrypoint: auth, aliases: [edge.tailnet.example]}
       dashboard: {hostname: traefik.example.net, entrypoint: dashboard}
 services:
   browser:
@@ -28,10 +29,11 @@ services:
       host: 127.0.0.1
       port: 19080
       port_source: home relay unit -R 127.0.0.1:19080
-      bridge: {port: 19081}
+      bridge: {port: 19081, unit_name: home-relay-bridge}
     public:
       enabled: true
       hostname: browser.example.net
+      aliases: [edge.tailnet.example]
       edge_node: edge
       entrypoint: apps
       auth: {provider: authelia, policy: two_factor}
@@ -44,7 +46,7 @@ services:
           host: 127.0.0.1
           port: 19080
           port_source: home relay unit -R 127.0.0.1:19080
-          bridge: {port: 19081}
+          bridge: {port: 19081, unit_name: home-relay-bridge}
         headers: {contentTypeNosniff: true, referrerPolicy: same-origin}
   notes:
     upstream:
@@ -53,7 +55,7 @@ services:
       host: 127.0.0.1
       port: 19080
       port_source: home relay unit -R 127.0.0.1:19080
-      bridge: {port: 19081}
+      bridge: {port: 19081, unit_name: home-relay-bridge}
     public:
       enabled: true
       hostname: notes.example.net

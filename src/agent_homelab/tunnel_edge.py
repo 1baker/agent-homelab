@@ -73,7 +73,28 @@ def compose_service(node: dict[str, Any], image: str) -> dict[str, Any]:
             "./traefik/dynamic:/etc/traefik/dynamic:ro",
         ],
         "healthcheck": {"test": ["CMD", "traefik", "healthcheck", "--ping"], "interval": "30s", "timeout": "5s"},
+        **({"networks": [edge["docker_network"]]} if edge.get("docker_network") else {}),
     }
+
+
+def compose_document(node: dict[str, Any], image: str) -> dict[str, Any]:
+    edge = node["edge"]
+    compose: dict[str, Any] = {"services": {"traefik": compose_service(node, image)}}
+    if edge.get("docker_network"):
+        # Join the existing network that Authelia and the bridges already use.
+        compose["networks"] = {edge["docker_network"]: {"external": True}}
+    return compose
+
+
+def tailscale_serve(node: dict[str, Any]) -> str:
+    """Commands mapping tailnet HTTPS ports to Traefik entrypoints (tailnet only, never Funnel)."""
+    lines = []
+    for name, value in sorted(node["edge"]["entrypoints"].items()):
+        if value.get("tailnet_https_port"):
+            lines.append(
+                f"tailscale serve --bg --https={value['tailnet_https_port']} http://127.0.0.1:{value['port']}  # {name}"
+            )
+    return "\n".join(lines) + "\n" if lines else ""
 
 
 def _upstream_url(upstream: dict[str, Any], edge: dict[str, Any]) -> str:
@@ -99,7 +120,7 @@ def dynamic_config(data: dict[str, Any], node_name: str) -> dict[str, Any]:
             }
         },
         "edge-strip-identity": {"headers": {"customRequestHeaders": {name: "" for name in IDENTITY_HEADERS}}},
-        "edge-secure-headers": {"headers": dict(SECURE_HEADERS)},
+        "edge-secure-headers": {"headers": dict(edge.get("secure_headers") or SECURE_HEADERS)},
         "authelia-forward-auth": {
             "forwardAuth": {
                 "address": edge.get("authelia", {}).get("address", AUTHELIA_FORWARD_AUTH),
@@ -132,23 +153,28 @@ def dynamic_config(data: dict[str, Any], node_name: str) -> dict[str, Any]:
         }
         return ["edge-rate-limit", "edge-strip-identity", pin, "authelia-forward-auth", headers_name]
 
+    def suffix(hostname: str, primary: str) -> str:
+        return "" if hostname == primary else f"-{slug(hostname)}"
+
     authelia = edge.get("authelia")
     if authelia:
         services["authelia"] = _load_balancer("http://authelia:9091")
-        routers["authelia"] = {
-            "rule": f"Host(`{authelia['hostname']}`)",
-            "entryPoints": [authelia["entrypoint"]],
-            "service": "authelia",
-            "middlewares": ["edge-rate-limit", "edge-secure-headers"],
-        }
+        for host in [authelia["hostname"], *authelia.get("aliases", [])]:
+            routers[f"authelia{suffix(host, authelia['hostname'])}"] = {
+                "rule": f"Host(`{host}`)",
+                "entryPoints": [authelia["entrypoint"]],
+                "service": "authelia",
+                "middlewares": ["edge-rate-limit", "edge-secure-headers"],
+            }
     dashboard = edge.get("dashboard")
     if dashboard:
-        routers["traefik-dashboard"] = {
-            "rule": f"Host(`{dashboard['hostname']}`)",
-            "entryPoints": [dashboard["entrypoint"]],
-            "service": "api@internal",
-            "middlewares": protected_chain(dashboard["hostname"], "edge-secure-headers"),
-        }
+        for host in [dashboard["hostname"], *dashboard.get("aliases", [])]:
+            routers[f"traefik-dashboard{suffix(host, dashboard['hostname'])}"] = {
+                "rule": f"Host(`{host}`)",
+                "entryPoints": [dashboard["entrypoint"]],
+                "service": "api@internal",
+                "middlewares": protected_chain(host, "edge-secure-headers"),
+            }
 
     for name, service in sorted(data["services"].items()):
         public = service.get("public", {})
@@ -167,33 +193,36 @@ def dynamic_config(data: dict[str, Any], node_name: str) -> dict[str, Any]:
 
         services[f"{name}-edge"] = _load_balancer(_upstream_url(service["upstream"], edge))
         headers_name = headers_middleware(f"{name}-headers", public.get("headers"))
-        chain = (
-            protected_chain(hostname, headers_name)
-            if protected
-            else ["edge-rate-limit", "edge-strip-identity", headers_name]
-        )
-        routers[f"{name}-public"] = {
-            "rule": f"Host(`{hostname}`)",
-            "entryPoints": [entrypoint],
-            "service": f"{name}-edge",
-            "middlewares": chain,
-        }
-        for index, route in enumerate(service.get("path_routes", [])):
-            key = f"{name}-{route['name']}"
-            services[f"{key}-edge"] = _load_balancer(_upstream_url(route["upstream"], edge))
-            route_headers = headers_middleware(f"{key}-headers", route.get("headers"))
-            base = (
-                protected_chain(hostname, route_headers)
+        # Aliases (e.g. a tailnet-only name) get their own routers and their own host pin.
+        for host in [hostname, *public.get("aliases", [])]:
+            tag = suffix(host, hostname)
+            chain = (
+                protected_chain(host, headers_name)
                 if protected
-                else ["edge-rate-limit", "edge-strip-identity", route_headers]
+                else ["edge-rate-limit", "edge-strip-identity", headers_name]
             )
-            routers[f"{key}-public"] = {
-                "rule": f"Host(`{hostname}`) && PathPrefix(`{route['path_prefix']}`)",
+            routers[f"{name}-public{tag}"] = {
+                "rule": f"Host(`{host}`)",
                 "entryPoints": [entrypoint],
-                "service": f"{key}-edge",
-                "priority": 100 + index,
-                "middlewares": base + list(route.get("middlewares", [])),
+                "service": f"{name}-edge",
+                "middlewares": chain,
             }
+            for index, route in enumerate(service.get("path_routes", [])):
+                key = f"{name}-{route['name']}"
+                services[f"{key}-edge"] = _load_balancer(_upstream_url(route["upstream"], edge))
+                route_headers = headers_middleware(f"{key}-headers", route.get("headers"))
+                base = (
+                    protected_chain(host, route_headers)
+                    if protected
+                    else ["edge-rate-limit", "edge-strip-identity", route_headers]
+                )
+                routers[f"{key}-public{tag}"] = {
+                    "rule": f"Host(`{host}`) && PathPrefix(`{route['path_prefix']}`)",
+                    "entryPoints": [entrypoint],
+                    "service": f"{key}-edge",
+                    "priority": 100 + index,
+                    "middlewares": base + list(route.get("middlewares", [])),
+                }
         for auth_name, definition in sorted(service.get("forward_auth", {}).items()):
             middlewares[auth_name] = {
                 "forwardAuth": {
@@ -217,7 +246,7 @@ def dynamic_config(data: dict[str, Any], node_name: str) -> dict[str, Any]:
                 "rule": f"Host(`{hostname}`) && Path(`/mcp`)",
                 "entryPoints": [entrypoint],
                 "service": f"{name}-mcp",
-                "middlewares": ["edge-rate-limit", "edge-strip-identity"],
+                "middlewares": ["edge-rate-limit", "edge-strip-identity", "edge-secure-headers"],
             }
 
     return {"http": {"routers": routers, "services": services, "middlewares": middlewares}}
@@ -253,7 +282,7 @@ def bridge_units(data: dict[str, Any], node_name: str) -> dict[str, str]:
         bridge = upstream.get("bridge")
         if not bridge or upstream["node"] != node_name:
             continue
-        name = f"agent-homelab-bridge-{bridge['port']}"
+        name = bridge.get("unit_name", f"agent-homelab-bridge-{bridge['port']}")
         requires = bridge.get("requires_unit")
         unit_deps = f"Requires={requires}\nAfter={requires}\n" if requires else ""
         units[f"{name}.socket"] = (
@@ -336,15 +365,19 @@ def route_probes(data: dict[str, Any], node_name: str) -> list[dict[str, Any]]:
 def authelia_access_rules(data: dict[str, Any], node_name: str) -> list[dict[str, str]]:
     edge = data["nodes"][node_name]["edge"]
     rules: dict[str, str] = {}
+    # Later entries win: a host shared by the portal and a protected route gets the route's policy.
     if edge.get("authelia"):
-        rules[edge["authelia"]["hostname"]] = "bypass"
+        for host in [edge["authelia"]["hostname"], *edge["authelia"].get("aliases", [])]:
+            rules[host] = "bypass"
     if edge.get("dashboard"):
-        rules[edge["dashboard"]["hostname"]] = "two_factor"
+        for host in [edge["dashboard"]["hostname"], *edge["dashboard"].get("aliases", [])]:
+            rules[host] = "two_factor"
     for service in data["services"].values():
         public = service.get("public", {})
         auth = public.get("auth", {})
         if public.get("enabled") and public.get("edge_node") == node_name and auth.get("provider") == "authelia":
-            rules[public["hostname"]] = auth["policy"]
+            for host in [public["hostname"], *public.get("aliases", [])]:
+                rules[host] = auth["policy"]
     return [{"domain": domain, "policy": policy} for domain, policy in sorted(rules.items())]
 
 

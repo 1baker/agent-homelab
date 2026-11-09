@@ -76,12 +76,12 @@ def test_tunnel_ingress_bridges_probes_and_policy_fragment(rendered: Path) -> No
     assert {"hostname": "notes.example.net", "service": "http://127.0.0.1:9082"} in ingress
     sockets = sorted(p.name for p in (rendered / "systemd").iterdir())
     assert sockets == [
-        "agent-homelab-bridge-19081.service",
-        "agent-homelab-bridge-19081.socket",
         "agent-homelab-bridge-19111.service",
         "agent-homelab-bridge-19111.socket",
+        "home-relay-bridge.service",
+        "home-relay-bridge.socket",
     ]
-    socket = (rendered / "systemd/agent-homelab-bridge-19081.socket").read_text()
+    socket = (rendered / "systemd/home-relay-bridge.socket").read_text()
     assert "ListenStream=198.51.100.1:19081" in socket and "FreeBind=yes" in socket
     service = (rendered / "systemd/agent-homelab-bridge-19111.service").read_text()
     assert "ExecStart=/usr/lib/systemd/systemd-socket-proxyd 127.0.0.1:19110" in service
@@ -148,3 +148,58 @@ def test_bridges_and_oauth_mcp_require_a_tunnel_edge() -> None:
         validate_inventory(data)
     assert "bridges are rendered only for tunnel edges" in str(error.value)
     assert "oauth_mcp: supported only on a tunnel edge" in str(error.value)
+
+
+def test_aliases_get_their_own_pinned_routers_policy_and_no_tunnel_ingress(rendered: Path) -> None:
+    http = read_yaml(rendered / "traefik/dynamic/services.yaml")["http"]
+    alias = http["routers"]["browser-public-edge-tailnet-example"]
+    assert alias["rule"] == "Host(`edge.tailnet.example`)"
+    assert alias["middlewares"][2] == "authz-host-edge-tailnet-example"
+    assert http["routers"]["browser-viewer-public-edge-tailnet-example"]["rule"] == (
+        "Host(`edge.tailnet.example`) && PathPrefix(`/guacamole`)"
+    )
+    assert http["routers"]["authelia-edge-tailnet-example"]["entryPoints"] == ["auth"]
+    hosts = [rule.get("hostname") for rule in read_yaml(rendered / "cloudflared/ingress.yml")["ingress"]]
+    assert "edge.tailnet.example" not in hosts
+    rules = read_yaml(rendered / "authelia/access_control.yml")["access_control"]["rules"]
+    # The portal alias and the protected alias share a host: the protected policy wins.
+    assert {"domain": "edge.tailnet.example", "policy": "two_factor"} in rules
+    assert (rendered / "tailscale/serve.sh").read_text() == (
+        "tailscale serve --bg --https=10000 http://127.0.0.1:9082  # apps\n"
+    )
+    compose = read_yaml(rendered / "compose.yaml")
+    assert compose["networks"] == {"edge_proxy": {"external": True}}
+    assert compose["services"]["traefik"]["networks"] == ["edge_proxy"]
+    assert http["routers"]["notes-oauth-mcp"]["middlewares"][-1] == "edge-secure-headers"
+
+
+def test_secure_headers_override_and_extension_blocks() -> None:
+    data = copy.deepcopy(load_inventory(FIXTURES / "tunnel.yaml").data)
+    data["nodes"]["edge"]["edge"]["secure_headers"] = {"referrerPolicy": "no-referrer"}
+    data["x-shared"] = {"anchor": True}
+    validate_inventory(data)
+    assert dynamic_config(data, "edge")["http"]["middlewares"]["edge-secure-headers"] == {
+        "headers": {"referrerPolicy": "no-referrer"}
+    }
+
+
+@pytest.mark.parametrize(
+    ("mutate", "message"),
+    [
+        (lambda d: d["services"]["notes"]["public"].update(aliases=["browser.example.net"]), "already used by"),
+        (
+            lambda d: d["services"]["notes"]["upstream"]["bridge"].update(unit_name="other-name"),
+            "needs the same unit name",
+        ),
+    ],
+)
+def test_host_and_bridge_name_collisions_are_rejected(mutate, message: str) -> None:
+    with pytest.raises(InventoryError, match=message):
+        validate_inventory(_mutated(mutate))
+
+
+def test_aliases_require_a_tunnel_edge() -> None:
+    data = yaml.safe_load((FIXTURES / "relay.yaml").read_text())
+    data["services"]["photos"]["public"]["aliases"] = ["photos.tailnet.example"]
+    with pytest.raises(InventoryError, match="aliases: supported only on a tunnel edge"):
+        validate_inventory(data)

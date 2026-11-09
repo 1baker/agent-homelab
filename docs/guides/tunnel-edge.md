@@ -60,6 +60,19 @@ In plain English: the `edge` block says which local ports Traefik listens on and
 
 `tests/fixtures/tunnel.yaml` is a complete example.
 
+Optional settings:
+
+| Setting | Effect |
+|---|---|
+| `public.aliases`, `edge.authelia.aliases`, `edge.dashboard.aliases` | Extra hostnames (for example a tailnet-only name) served by the same routes, each with its own host pin and Authelia rule. Aliases are not added to the Cloudflare Tunnel. |
+| `entrypoints.<name>.tailnet_https_port` | Renders `tailscale/serve.sh` with the matching `tailscale serve --https=<port>` command (tailnet only, never Funnel). |
+| `upstream.bridge.unit_name` | Keeps an existing systemd unit name. Every upstream on the same bridge port must use the same name. |
+| `edge.secure_headers` | Replaces the default security headers. |
+| `edge.docker_network` | Joins an existing external Docker network, such as the one Authelia already uses. |
+| Top-level `x-*` keys | Hold YAML anchors for shared blocks; rendering ignores them. |
+
+A hostname may appear only once per entrypoint across the portal, dashboard, services and aliases.
+
 ## What `render` produces for a tunnel node
 
 | File | Purpose |

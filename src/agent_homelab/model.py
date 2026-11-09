@@ -166,7 +166,23 @@ def _tunnel_edge_errors(data: dict[str, Any]) -> list[str]:
             if entrypoint and entrypoint not in entrypoints:
                 problems.append(f"{path}.{key}.entrypoint: unknown entrypoint {entrypoint!r}")
 
-    bridge_ports: dict[tuple[str, int], str] = {}
+    routed: dict[tuple[str, str, str], str] = {}
+
+    def claim_host(node_name: str, entrypoint: str, hostname: str, owner: str) -> None:
+        key = (node_name, entrypoint, hostname.lower())
+        if key in routed and routed[key] != owner:
+            problems.append(f"{owner}: host {hostname!r} on entrypoint {entrypoint!r} is already used by {routed[key]}")
+        routed.setdefault(key, owner)
+
+    for node_name, node in nodes.items():
+        if edge_mode(node) == "tunnel":
+            for key in ("authelia", "dashboard"):
+                block = node["edge"].get(key)
+                if block:
+                    for host in [block["hostname"], *block.get("aliases", [])]:
+                        claim_host(node_name, block["entrypoint"], host, f"nodes.{node_name}.edge.{key}")
+
+    bridge_ports: dict[tuple[str, int], tuple[Any, ...]] = {}
     for service_name, service in data["services"].items():
         public = service.get("public", {})
         edge_node = nodes.get(public.get("edge_node", ""), {})
@@ -180,7 +196,11 @@ def _tunnel_edge_errors(data: dict[str, Any]) -> list[str]:
             upstreams.append((f"services.{service_name}.public.oauth_mcp.upstream", public["oauth_mcp"]["upstream"]))
             if not tunnel:
                 problems.append(f"services.{service_name}.public.oauth_mcp: supported only on a tunnel edge")
+        if public.get("aliases") and not tunnel:
+            problems.append(f"services.{service_name}.public.aliases: supported only on a tunnel edge")
         if tunnel:
+            for host in [public.get("hostname", ""), *public.get("aliases", [])]:
+                claim_host(public["edge_node"], public.get("entrypoint", ""), host, f"services.{service_name}")
             entrypoint = public.get("entrypoint")
             if entrypoint not in edge_node.get("edge", {}).get("entrypoints", {}):
                 problems.append(
@@ -201,9 +221,14 @@ def _tunnel_edge_errors(data: dict[str, Any]) -> list[str]:
             if bridge:
                 key = (upstream["node"], bridge["port"])
                 owner = (upstream["host"], upstream["port"])
-                if key in bridge_ports and bridge_ports[key] != owner:
+                owner = (*owner, bridge.get("unit_name"))
+                if key in bridge_ports and bridge_ports[key][:2] != owner[:2]:
                     problems.append(f"{path}.bridge.port: {bridge['port']} already bridges a different upstream")
-                bridge_ports[key] = owner
+                elif key in bridge_ports and bridge_ports[key][2] != owner[2]:
+                    problems.append(
+                        f"{path}.bridge.unit_name: every upstream on bridge {bridge['port']} needs the same unit name"
+                    )
+                bridge_ports.setdefault(key, owner)
     return problems
 
 

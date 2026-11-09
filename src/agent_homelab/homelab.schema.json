@@ -5,6 +5,7 @@
   "type": "object",
   "additionalProperties": false,
   "required": ["schema_version", "site", "nodes", "services"],
+  "patternProperties": {"^x-": {"description": "Extension blocks for YAML anchors; ignored by rendering."}},
   "properties": {
     "schema_version": {"const": 1},
     "site": {
@@ -111,9 +112,14 @@
             "type": "object",
             "additionalProperties": false,
             "required": ["port"],
-            "properties": {"port": {"type": "integer", "minimum": 1, "maximum": 65535}}
+            "properties": {
+              "port": {"type": "integer", "minimum": 1, "maximum": 65535},
+              "tailnet_https_port": {"type": "integer", "minimum": 1, "maximum": 65535}
+            }
           }
         },
+        "docker_network": {"type": "string", "minLength": 1, "description": "Existing external Docker network shared with Authelia."},
+        "secure_headers": {"type": "object", "description": "Traefik headers options for the default edge secure-headers middleware."},
         "authelia": {
           "type": "object",
           "additionalProperties": false,
@@ -121,16 +127,27 @@
           "properties": {
             "hostname": {"type": "string", "minLength": 1},
             "entrypoint": {"type": "string", "minLength": 1},
-            "address": {"type": "string", "format": "uri"}
+            "address": {"type": "string", "format": "uri"},
+            "aliases": {"$ref": "#/$defs/hostnames"}
           }
         },
         "dashboard": {
           "type": "object",
           "additionalProperties": false,
           "required": ["hostname", "entrypoint"],
-          "properties": {"hostname": {"type": "string", "minLength": 1}, "entrypoint": {"type": "string", "minLength": 1}}
+          "properties": {
+            "hostname": {"type": "string", "minLength": 1},
+            "entrypoint": {"type": "string", "minLength": 1},
+            "aliases": {"$ref": "#/$defs/hostnames"}
+          }
         }
       }
+    },
+    "hostnames": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {"type": "string", "minLength": 1},
+      "description": "Extra hostnames served by the same routes, such as a tailnet-only name. Not added to the Cloudflare Tunnel."
     },
     "upstream": {
       "type": "object",
@@ -150,7 +167,8 @@
           "description": "Expose a host-loopback service to the Traefik container through a systemd socket proxy on the Docker gateway.",
           "properties": {
             "port": {"type": "integer", "minimum": 1, "maximum": 65535},
-            "requires_unit": {"type": "string", "minLength": 1}
+            "requires_unit": {"type": "string", "minLength": 1},
+            "unit_name": {"type": "string", "pattern": "^[a-z0-9][a-z0-9-]*$"}
           }
         }
       }
@@ -211,6 +229,7 @@
               }
             },
             "headers": {"type": "object", "description": "Traefik headers middleware options for this public router on a tunnel edge."},
+            "aliases": {"$ref": "#/$defs/hostnames"},
             "oauth_mcp": {
               "type": "object",
               "additionalProperties": false,

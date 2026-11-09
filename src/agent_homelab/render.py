@@ -78,8 +78,10 @@ def _render_tunnel_node(data: dict[str, Any], node_name: str, node_dir: Path) ->
     _check_safety(node_name, static, dynamic)
     _write_yaml(node_dir / "traefik" / "traefik.yaml", static)
     _write_yaml(node_dir / "traefik" / "dynamic" / "services.yaml", dynamic)
-    compose: dict[str, Any] = {"services": {"traefik": tunnel_edge.compose_service(node, TRAEFIK_IMAGE)}}
-    _write_yaml(node_dir / "compose.yaml", compose)
+    _write_yaml(node_dir / "compose.yaml", tunnel_edge.compose_document(node, TRAEFIK_IMAGE))
+    serve = tunnel_edge.tailscale_serve(node)
+    if serve:
+        _write_text(node_dir / "tailscale" / "serve.sh", serve)
     _write_yaml(node_dir / "cloudflared" / "ingress.yml", tunnel_edge.cloudflared_ingress(data, node_name))
     for unit_name, text in sorted(tunnel_edge.bridge_units(data, node_name).items()):
         _write_text(node_dir / "systemd" / unit_name, text)
