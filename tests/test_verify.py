@@ -56,3 +56,34 @@ def test_protected_route_requires_auth_host_redirect(monkeypatch: pytest.MonkeyP
     FakeConnection.response = FakeResponse(302, "https://unrelated.example.net/")
     result = verify.probe("app", "public", "https://app.example.net", expected_auth_redirect=True)
     assert result.ok is False
+
+
+def test_probe_spec_sends_forged_header_and_checks_expected_status(monkeypatch) -> None:
+    sent: dict = {}
+
+    class Connection:
+        def __init__(self, host, port, **kwargs):
+            sent["host"] = host
+
+        def request(self, method, path, body=None, headers=None):
+            sent.update(method=method, path=path, headers=headers)
+
+        def getresponse(self):
+            return FakeResponse(200 if sent["headers"].get("X-Forwarded-Host") else 302, "https://auth.example.net/")
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(verify.http.client, "HTTPSConnection", Connection)
+    spec = {
+        "name": "app-forged-forwarded-host",
+        "url": "https://app.example.net/",
+        "method": "GET",
+        "headers": {"X-Forwarded-Host": "auth.example.net"},
+        "expect": [302, 401],
+    }
+    result = verify.probe_spec(spec)
+    assert sent["headers"]["X-Forwarded-Host"] == "auth.example.net"
+    assert result.ok is False and result.status == 200 and "got 200" in result.detail
+    spec["headers"] = {}
+    assert verify.probe_spec(spec).ok is True

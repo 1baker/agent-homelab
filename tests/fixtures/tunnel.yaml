@@ -1,0 +1,70 @@
+# Cloudflare Tunnel edge on a home server: cloudflared -> loopback Traefik -> bridges -> host services.
+schema_version: 1
+site:
+  domain: example.net
+  timezone: Etc/UTC
+nodes:
+  edge:
+    roles: [service_host, edge_gateway]
+    connect:
+      address: 192.0.2.30
+      ssh_alias: edge
+    edge:
+      mode: tunnel
+      trusted_ips: [127.0.0.1/32, 198.51.100.1/32]
+      docker_gateway: 198.51.100.1
+      rate_limit: {average: 20, burst: 40}
+      entrypoints:
+        auth: {port: 9080}
+        dashboard: {port: 9081}
+        apps: {port: 9082}
+      authelia: {hostname: auth.example.net, entrypoint: auth}
+      dashboard: {hostname: traefik.example.net, entrypoint: dashboard}
+services:
+  browser:
+    upstream:
+      node: edge
+      scheme: http
+      host: 127.0.0.1
+      port: 19080
+      port_source: home relay unit -R 127.0.0.1:19080
+      bridge: {port: 19081}
+    public:
+      enabled: true
+      hostname: browser.example.net
+      edge_node: edge
+      entrypoint: apps
+      auth: {provider: authelia, policy: two_factor}
+    path_routes:
+      - name: viewer
+        path_prefix: /guacamole
+        upstream:
+          node: edge
+          scheme: http
+          host: 127.0.0.1
+          port: 19080
+          port_source: home relay unit -R 127.0.0.1:19080
+          bridge: {port: 19081}
+        headers: {contentTypeNosniff: true, referrerPolicy: same-origin}
+  notes:
+    upstream:
+      node: edge
+      scheme: http
+      host: 127.0.0.1
+      port: 19080
+      port_source: home relay unit -R 127.0.0.1:19080
+      bridge: {port: 19081}
+    public:
+      enabled: true
+      hostname: notes.example.net
+      edge_node: edge
+      entrypoint: apps
+      auth: {provider: authelia, policy: two_factor}
+      oauth_mcp:
+        upstream:
+          node: edge
+          scheme: http
+          host: 127.0.0.1
+          port: 19110
+          port_source: oauth relay unit LISTEN=127.0.0.1:19110
+          bridge: {port: 19111, requires_unit: notes-oauth-relay.service}

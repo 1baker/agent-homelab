@@ -79,7 +79,57 @@
           "additionalProperties": false,
           "properties": {"scheme": {"enum": ["http", "https"]}, "port": {"type": "integer", "minimum": 1, "maximum": 65535}}
         },
-        "deploy": {"$ref": "#/$defs/deploy"}
+        "deploy": {"$ref": "#/$defs/deploy"},
+        "edge": {"$ref": "#/$defs/edge"}
+      }
+    },
+    "edge": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["mode"],
+      "description": "Edge ingress shape. direct (default when absent): Traefik terminates TLS on :443. tunnel: a Cloudflare Tunnel delivers HTTP to loopback-published Traefik entrypoints.",
+      "properties": {
+        "mode": {"enum": ["direct", "tunnel"]},
+        "trusted_ips": {
+          "type": "array",
+          "minItems": 1,
+          "items": {"type": "string", "minLength": 1},
+          "description": "Hops allowed to set X-Forwarded-* (the cloudflared or Docker-proxy hop). Never 0.0.0.0/0."
+        },
+        "docker_gateway": {"type": "string", "minLength": 1, "description": "Docker network gateway used by host-service bridge sockets."},
+        "client_ip_header": {"type": "string", "default": "Cf-Connecting-IP"},
+        "rate_limit": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["average", "burst"],
+          "properties": {"average": {"type": "integer", "minimum": 1}, "burst": {"type": "integer", "minimum": 1}}
+        },
+        "entrypoints": {
+          "type": "object",
+          "minProperties": 1,
+          "additionalProperties": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["port"],
+            "properties": {"port": {"type": "integer", "minimum": 1, "maximum": 65535}}
+          }
+        },
+        "authelia": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["hostname", "entrypoint"],
+          "properties": {
+            "hostname": {"type": "string", "minLength": 1},
+            "entrypoint": {"type": "string", "minLength": 1},
+            "address": {"type": "string", "format": "uri"}
+          }
+        },
+        "dashboard": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["hostname", "entrypoint"],
+          "properties": {"hostname": {"type": "string", "minLength": 1}, "entrypoint": {"type": "string", "minLength": 1}}
+        }
       }
     },
     "upstream": {
@@ -92,7 +142,17 @@
         "host": {"type": "string", "minLength": 1},
         "port": {"type": "integer", "minimum": 1, "maximum": 65535},
         "port_source": {"type": "string", "minLength": 1},
-        "allow_ephemeral_port": {"type": "boolean", "default": false}
+        "allow_ephemeral_port": {"type": "boolean", "default": false},
+        "bridge": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["port"],
+          "description": "Expose a host-loopback service to the Traefik container through a systemd socket proxy on the Docker gateway.",
+          "properties": {
+            "port": {"type": "integer", "minimum": 1, "maximum": 65535},
+            "requires_unit": {"type": "string", "minLength": 1}
+          }
+        }
       }
     },
     "pathRoute": {
@@ -103,7 +163,8 @@
         "name": {"type": "string", "pattern": "^[a-z0-9][a-z0-9-]*$"},
         "path_prefix": {"type": "string", "pattern": "^/"},
         "upstream": {"$ref": "#/$defs/upstream"},
-        "middlewares": {"type": "array", "items": {"type": "string"}}
+        "middlewares": {"type": "array", "items": {"type": "string"}},
+        "headers": {"type": "object", "description": "Traefik headers middleware options for this path route on a tunnel edge."}
       }
     },
     "service": {
@@ -148,6 +209,14 @@
                 "provider": {"const": "authelia"},
                 "policy": {"enum": ["one_factor", "two_factor", "bypass", "deny"]}
               }
+            },
+            "headers": {"type": "object", "description": "Traefik headers middleware options for this public router on a tunnel edge."},
+            "oauth_mcp": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["upstream"],
+              "description": "OAuth-protected MCP: protected-resource metadata and /mcp route to this upstream without forward-auth.",
+              "properties": {"upstream": {"$ref": "#/$defs/upstream"}}
             }
           }
         },

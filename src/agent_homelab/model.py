@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ipaddress
 import json
 import re
 from collections.abc import Iterable
@@ -125,13 +126,88 @@ def _semantic_errors(data: dict[str, Any]) -> list[str]:
                 if middleware not in defined_middlewares:
                     problems.append(f"{route_path}.middlewares: undefined service forward-auth {middleware!r}")
 
+    problems.extend(_tunnel_edge_errors(data))
     problems.extend(_inline_secret_errors(data))
     return problems
 
 
-def _check_upstream(
-    upstream: dict[str, Any], path: str, nodes: dict[str, dict[str, Any]], problems: list[str]
-) -> None:
+def edge_mode(node: dict[str, Any]) -> str:
+    return node.get("edge", {}).get("mode", "direct")
+
+
+def _tunnel_edge_errors(data: dict[str, Any]) -> list[str]:
+    """Rules for Cloudflare-Tunnel edges, where Traefik must trust a forwarding hop."""
+    problems: list[str] = []
+    nodes = data["nodes"]
+    for node_name, node in nodes.items():
+        if edge_mode(node) != "tunnel":
+            continue
+        path = f"nodes.{node_name}.edge"
+        edge = node["edge"]
+        if "edge_gateway" not in node["roles"]:
+            problems.append(f"{path}: tunnel mode requires the edge_gateway role")
+        for key in ("trusted_ips", "docker_gateway", "entrypoints"):
+            if not edge.get(key):
+                problems.append(f"{path}.{key}: required in tunnel mode")
+        for cidr in edge.get("trusted_ips", []):
+            try:
+                network = ipaddress.ip_network(cidr, strict=False)
+            except ValueError:
+                problems.append(f"{path}.trusted_ips: {cidr!r} is not an address or CIDR")
+                continue
+            if network.prefixlen < 8:
+                problems.append(f"{path}.trusted_ips: {cidr!r} is too broad to trust forwarded headers from")
+        entrypoints = edge.get("entrypoints", {})
+        ports = [value["port"] for value in entrypoints.values()]
+        if len(ports) != len(set(ports)):
+            problems.append(f"{path}.entrypoints: ports must be unique")
+        for key in ("authelia", "dashboard"):
+            entrypoint = edge.get(key, {}).get("entrypoint")
+            if entrypoint and entrypoint not in entrypoints:
+                problems.append(f"{path}.{key}.entrypoint: unknown entrypoint {entrypoint!r}")
+
+    bridge_ports: dict[tuple[str, int], str] = {}
+    for service_name, service in data["services"].items():
+        public = service.get("public", {})
+        edge_node = nodes.get(public.get("edge_node", ""), {})
+        tunnel = public.get("enabled") and edge_mode(edge_node) == "tunnel"
+        upstreams = [(f"services.{service_name}.upstream", service["upstream"])]
+        upstreams += [
+            (f"services.{service_name}.path_routes.{i}.upstream", r["upstream"])
+            for i, r in enumerate(service.get("path_routes", []))
+        ]
+        if public.get("oauth_mcp"):
+            upstreams.append((f"services.{service_name}.public.oauth_mcp.upstream", public["oauth_mcp"]["upstream"]))
+            if not tunnel:
+                problems.append(f"services.{service_name}.public.oauth_mcp: supported only on a tunnel edge")
+        if tunnel:
+            entrypoint = public.get("entrypoint")
+            if entrypoint not in edge_node.get("edge", {}).get("entrypoints", {}):
+                problems.append(
+                    f"services.{service_name}.public.entrypoint: must name a tunnel entrypoint, got {entrypoint!r}"
+                )
+            if service["upstream"]["node"] != public["edge_node"]:
+                problems.append(
+                    f"services.{service_name}.upstream.node: tunnel edges serve their own node; "
+                    "relay a remote service to it first"
+                )
+        for path, upstream in upstreams:
+            bridge = upstream.get("bridge")
+            loopback = upstream["host"] in ("127.0.0.1", "localhost", "::1")
+            if tunnel and loopback and not bridge:
+                problems.append(f"{path}.bridge: a loopback upstream needs a bridge socket on a tunnel edge")
+            if bridge and not tunnel:
+                problems.append(f"{path}.bridge: bridges are rendered only for tunnel edges")
+            if bridge:
+                key = (upstream["node"], bridge["port"])
+                owner = (upstream["host"], upstream["port"])
+                if key in bridge_ports and bridge_ports[key] != owner:
+                    problems.append(f"{path}.bridge.port: {bridge['port']} already bridges a different upstream")
+                bridge_ports[key] = owner
+    return problems
+
+
+def _check_upstream(upstream: dict[str, Any], path: str, nodes: dict[str, dict[str, Any]], problems: list[str]) -> None:
     node_name = upstream["node"]
     if node_name not in nodes:
         problems.append(f"{path}.node: unknown node {node_name!r}")

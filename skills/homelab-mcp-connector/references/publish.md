@@ -93,6 +93,8 @@ http:
 
 Strip `Remote-User`-style identity headers on these routers so the MCP server never trusts a client-supplied identity. Any other path on the host can keep Authelia forward-auth for a browser UI.
 
+If you do put Authelia forward-auth on another router behind the tunnel, pin `X-Forwarded-Host` to that router's host (and `X-Forwarded-Proto: https`) in a headers middleware before forward-auth. The entry point trusts forwarded headers from the tunnel hop, so a client-supplied `X-Forwarded-Host` naming a bypass domain would otherwise skip sign-in. `agent-homelab render` does this for tunnel edges and refuses configs without it; see `docs/guides/tunnel-edge.md`.
+
 ## 4. Check
 
 ```sh
