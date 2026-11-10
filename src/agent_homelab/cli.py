@@ -12,7 +12,7 @@ from typing import Any
 
 import yaml
 
-from . import __version__
+from . import __version__, tailscale_policy
 from .bootstrap import bootstrap_node, create_recovery_bundle
 from .deploy import apply_plan, build_plan, format_plan
 from .migrations import migrate_payload
@@ -102,6 +102,8 @@ def parser() -> argparse.ArgumentParser:
     recipe_show = recipe_sub.add_parser("show", help="show one service recipe")
     recipe_show.add_argument("name")
 
+    tailscale_policy.add_parser(sub)
+
     return root
 
 
@@ -111,6 +113,8 @@ def _inventory_arg(command: argparse.ArgumentParser, *, required: bool = True) -
 
 def main(argv: list[str] | None = None) -> int:
     args = parser().parse_args(argv)
+    if args.command == "tailscale-policy":
+        return tailscale_policy.run(args)
     try:
         if args.command == "init":
             return _init(args)

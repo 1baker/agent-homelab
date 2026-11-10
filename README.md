@@ -102,6 +102,8 @@ Start from [`homelab.example.yaml`](homelab.example.yaml). Real `homelab.yaml`, 
 
 The schema is versioned. Use `agent-homelab migrate --inventory old.yaml --output homelab.yaml` to create a validated current inventory without overwriting the source.
 
+Optional [Tailscale policy access](docs/guides/tailscale-policy.md) adds private OAuth enrollment, raw policy snapshots and candidate validation. Start with a scoped reader; conditional writes require a separate configured writer and an explicitly reviewed candidate. It uses the existing mesh and leaves ingress configuration separate.
+
 ## Agent skills
 
 | Skill | Phase | Purpose |
