@@ -6,6 +6,10 @@
 
 **Who it is for:** People self-hosting several web apps who want one sign-in protecting all of them.
 
+![Terminal showing agent-homelab creating, validating and rendering a sample two-node setup](docs/images/how-it-works.png)
+
+*Real output: from one sample inventory file to ready-made Traefik and compose files for each machine.*
+
 **How it works:**
 
 ```mermaid
