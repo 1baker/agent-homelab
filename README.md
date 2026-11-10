@@ -1,5 +1,24 @@
 # Agent Homelab
 
+> **About this copy:** this is a personal fork of [CochranResearchGroup/agent-homelab](https://github.com/CochranResearchGroup/agent-homelab). The original project's documentation continues below.
+
+**In one sentence:** Agent Homelab sets up the 'front door' for web apps you host at home: from one settings file it produces the routing (Traefik) and login protection (Authelia) configuration.
+
+**Who it is for:** People self-hosting several web apps who want one sign-in protecting all of them.
+
+**How it works:**
+
+```mermaid
+flowchart LR
+    Inv[One inventory file] --> AH[Agent Homelab]
+    AH --> T[Traefik routing config]
+    AH --> AU[Authelia login config]
+    Visitor[Visitor] --> T --> AU --> Apps[Your apps]
+```
+
+---
+
+
 Agent Homelab turns one privacy-safe inventory into Traefik and Authelia configuration for a single host, a service host relayed through a separate edge gateway, or a home server behind a Cloudflare Tunnel. It includes a Python CLI, a sanitized service catalog, guarded Borg backups, and eight agent skills for setup and operations.
 
 ## Supported topology
