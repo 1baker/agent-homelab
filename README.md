@@ -114,7 +114,7 @@ Optional [Tailscale policy access](docs/guides/tailscale-policy.md) adds private
 | `homelab-borg-backup` | Operations | Configure, check, and stage restores from encrypted Borg backups |
 | `homelab-maintenance` | Maintenance | Detect drift, validate health, and perform guarded upgrades |
 | `homelab-oauth-relay` | Operations | Install and test the optional headless OAuth relay |
-| `homelab-mcp-connector` | Operations | Publish an OAuth-protected MCP server and connect chat apps (ChatGPT, Claude, Grok, Superhuman Go) |
+| `homelab-mcp-connector` | Operations | Publish an OAuth-protected MCP server and register chat apps as Authelia clients; connect them with `mcp-onboarding` |
 | `homelab-troubleshooter` | Runbook | Classify DNS, TLS, edge, auth, relay, origin, and app failures |
 
 Copy a skill directory into the skill location used by your agent, or let the agent read it directly from this repository.

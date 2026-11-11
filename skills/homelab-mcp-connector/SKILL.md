@@ -1,6 +1,6 @@
 ---
 name: homelab-mcp-connector
-description: Publishes an OAuth-protected remote MCP server through a homelab edge (Cloudflare Tunnel, Traefik, Authelia) and connects it to ChatGPT, Claude, Claude Code, Codex, Grok or Superhuman Go. Use when asked to expose an MCP server publicly, add an MCP connector to a chat app, or repeat an existing MCP connector setup for another client.
+description: Publishes an OAuth-protected remote MCP server through a homelab edge (Cloudflare Tunnel, Traefik, Authelia) and preregisters each chat app as an Authelia OIDC client. Use when asked to expose an MCP server publicly or to add an Authelia client for another chat app. Connecting a client to the published server belongs to mcp-onboarding; building the server's OAuth belongs to oauth-custom-mcp.
 license: Apache-2.0
 ---
 
@@ -8,13 +8,19 @@ license: Apache-2.0
 
 One MCP server, one canonical resource URL, many chat clients. The MCP server validates audience-bound JWT access tokens; Authelia is the authorization server; each chat app is a separately registered OAuth client.
 
+This skill owns the middle stage only:
+
+1. Build the server's OAuth validation with `oauth-custom-mcp`.
+2. Publish it through the edge and register Authelia clients here.
+3. Connect each client and prove it works with `mcp-onboarding`.
+
 ## Reference files
 
 | File | Read when |
 |---|---|
 | [references/publish.md](references/publish.md) | Routing a host MCP service through the tunnel, Traefik and a Docker-bridge socket proxy |
 | [references/authelia-clients.md](references/authelia-clients.md) | Registering a chat app as an Authelia OIDC client |
-| [references/clients.md](references/clients.md) | Connecting a specific chat app and finding its callback |
+| [references/clients.md](references/clients.md) | Finding a chat app's callback and Authelia client type before registering it |
 
 ## Workflow
 
@@ -26,13 +32,12 @@ Copy and track:
 - [ ] Run `scripts/check_mcp_route.py https://<host>/mcp` and get PASS before touching any client.
 - [ ] For each chat app, read its exact callback from that app's UI or official docs, then add one Authelia client for it.
 - [ ] Validate and apply the Authelia change in the owner's maintenance window; existing sessions and clients must survive.
-- [ ] Add the connector in the chat app and complete sign-in plus two-factor as the human.
-- [ ] Prove the connection: initialize, tools/list and one scoped read-only tool call from that app.
 - [ ] Add the route to the edge health check so a dead upstream is noticed.
+- [ ] Hand off to `mcp-onboarding` to add the connector in each app, complete the human sign-in and two-factor, and prove initialize, tools/list and one scoped tool call. This skill stops at a published route with a PASS check and registered clients.
 
 ## Validation loop
 
-Classify a failure by layer before editing: tunnel hostname, Traefik router, bridge socket, MCP service, metadata, Authelia client/callback, token audience/scope, or client-side bug. `check_mcp_route.py` covers the first five; the rest need the client's real sign-in.
+Classify a failure by layer before editing: tunnel hostname, Traefik router, bridge socket, MCP service, metadata, Authelia client/callback, token audience/scope, or client-side bug. `check_mcp_route.py` covers the first five; the rest need the client's real sign-in through `mcp-onboarding`. Fix edge-layer failures here.
 
 ## Gotchas
 
@@ -48,5 +53,7 @@ Classify a failure by layer before editing: tunnel hostname, Traefik router, bri
 ## Related skills
 
 - Use `homelab-service-ingress` for ordinary browser services behind Authelia.
+- Use `oauth-custom-mcp` to build the MCP server's token validation and protected-resource metadata.
+- Use `mcp-onboarding` to connect ChatGPT, Claude, Claude Code, Codex, Grok or Superhuman Go to the published server and prove a real tool call.
 - Use `homelab-troubleshooter` for layered diagnosis.
 - Use `homelab-maintenance` to add the route to recurring health checks.
