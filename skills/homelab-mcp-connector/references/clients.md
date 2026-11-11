@@ -17,24 +17,16 @@ Superhuman Go's native connector form (observed November 2026) needs a confident
 
 ## Superhuman Go Pack (alternative)
 
-Use a Pack only if the native form cannot be used. `mcp-onboarding` does not cover Packs yet, so the recipe stays here with its Authelia requirements. Requires a Superhuman Pro plan or higher and Doc Maker access. Its callback is `https://docs.superhuman.com/packsAuth/oauth2/<pack-id>` (exact value in Pack Settings → Add OAuth credentials). A Pack connects to exactly one MCP server:
+Building, uploading and configuring a Pack is client-side setup that belongs to `mcp-onboarding`, which does not cover Packs yet. Treat a Pack as unsupported here: register its Authelia client, then hand it off as deferred. Use one only if the native form cannot be used.
 
-```ts
-import * as sdk from "@codahq/packs-sdk";
-export const pack = sdk.newPack();
+Authelia requirements for a Pack client:
 
-pack.addNetworkDomain("<root-domain>");
-pack.setUserAuthentication({
-  type: sdk.AuthenticationType.OAuth2,
-  authorizationUrl: "https://<auth-host>/api/oidc/authorization",
-  tokenUrl: "https://<auth-host>/api/oidc/token",
-  scopes: ["<narrow MCP scopes>"],
-  useProofKeyForCodeExchange: true,
-});
-pack.addMCPServer({ name: "<letters_numbers_underscores>", endpointUrl: "https://<mcp-host>/mcp" });
-```
-
-Upload and release with `npx packs upload pack.ts` and `npx packs release pack.ts --notes "<notes>"`, then add the client credentials in Pack Settings. Do not use `useDynamicClientRegistration` against Authelia. Confirm the token request carries the MCP resource as audience; if the Pack cannot send it, configure the Authelia client's default audience.
+- Callback: `https://docs.superhuman.com/packsAuth/oauth2/<pack-id>` (exact value in Pack Settings → Add OAuth credentials).
+- Client type: confidential (client ID and secret), with PKCE (`S256`).
+- Endpoints the Pack uses: `https://<auth-host>/api/oidc/authorization` and `https://<auth-host>/api/oidc/token`, with narrow MCP scopes.
+- No dynamic client registration: the Pack must not use `useDynamicClientRegistration` against Authelia; preregister its client.
+- Audience: the token request must carry the MCP resource (`https://<mcp-host>/mcp`) as audience; if the Pack cannot send it, configure the Authelia client's default audience.
+- A Pack connects to exactly one MCP server.
 
 ## After registration
 
