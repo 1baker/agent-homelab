@@ -35,6 +35,7 @@ agent-homelab = "agent_homelab.cli:main"
 agent-homelab-oauth-relay = "agent_homelab.oauth_relay:main"
 agent-homelab-credential-health = "agent_homelab.credential_health:main"
 agent-homelab-borg-backup = "agent_homelab.borg_backup:main"
+agent-homelab-authelia-maintenance = "agent_homelab.authelia_maintenance:main"
 
 [project.urls]
 Documentation = "https://github.com/CochranResearchGroup/agent-homelab/tree/main/docs"

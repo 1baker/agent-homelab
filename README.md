@@ -125,6 +125,7 @@ Copy a skill directory into the skill location used by your agent, or let the ag
 - [First homelab](docs/guides/first-homelab.md)
 - [Service catalog](docs/guides/service-catalog.md)
 - [Borg backups](docs/guides/borg-backups.md)
+- [Authelia maintenance window](docs/guides/authelia-maintenance.md)
 - [Direct-host setup](docs/guides/direct-host.md)
 - [Bastion relay](docs/guides/bastion-relay.md)
 - [Cloudflare Tunnel edge](docs/guides/tunnel-edge.md)

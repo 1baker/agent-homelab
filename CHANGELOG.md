@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Added `agent-homelab-authelia-maintenance`, a dry-run-by-default stopped-writer transaction for Authelia changes: validate the candidate, stop, confirm the SQLite writer is quiet, cold-copy config, database and key inputs into a 0700 backup with a SHA-256 manifest, apply, start, verify, and roll back automatically on failure.
+
 ## 0.2.0-rc.2
 
 - Established operator-owned Docker Compose project directories as the recommended authority for agent-managed services.
