@@ -117,9 +117,9 @@ def plan(target: Target) -> Report:
         f"cold-copy {len(target.protected())} protected path(s) into a dated 0700 directory under {target.backup_root}",
         "verify every copy against its SHA-256 and write manifest.json (0600)",
         "install candidate atomically with the original mode and owner",
-        f"start service `{target.service}`",
+        f"start service `{target.service}` (same container; no recreate)",
         f"verify {len(target.verify)} URL(s) within {target.verify_timeout:g}s",
-        "on any failure after stop: restore copies, start, verify (rollback)",
+        "on any failure after stop: restore copies, start, verify (rollback); if a restore fails, stay stopped",
     ]
     return report
 
@@ -134,6 +134,16 @@ def preflight(target: Target) -> None:
         raise MaintenanceError("at least one --verify URL=STATUS is required")
     if target.backup_root.exists() and not target.backup_root.is_dir():
         raise MaintenanceError(f"backup root is not a directory: {target.backup_root}")
+    euid = os.geteuid()
+    for path in target.protected():
+        if not os.access(path.parent, os.W_OK | os.X_OK):
+            raise MaintenanceError(f"cannot write the directory needed to restore: {path.parent}")
+        if not path.exists():
+            continue
+        if not os.access(path, os.R_OK):
+            raise MaintenanceError(f"cannot read protected file: {path}")
+        if euid != 0 and path.stat().st_uid != euid:
+            raise MaintenanceError(f"protected file is owned by another user and could not be restored: {path}")
 
 
 def validate_candidate(target: Target, runner: Runner) -> None:
@@ -229,7 +239,10 @@ def backup(target: Target, now: datetime) -> Path:
 
 def _install(source: Path, destination: Path, mode: int, uid: int, gid: int) -> None:
     temp = destination.with_name(f".{destination.name}.agent-homelab-tmp")
-    shutil.copyfile(source, temp)
+    temp.unlink(missing_ok=True)
+    descriptor = os.open(temp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(descriptor, "wb") as out, source.open("rb") as src:
+        shutil.copyfileobj(src, out)
     os.chmod(temp, mode)
     if (uid, gid) != (os.getuid(), os.getgid()):
         os.chown(temp, uid, gid)
@@ -244,23 +257,30 @@ def apply_candidate(target: Target) -> None:
 
 
 def restore(directory: Path) -> None:
+    """Restore every manifest entry; attempt all of them, then fail if any could not be restored."""
     manifest = json.loads((directory / "manifest.json").read_text())
+    failures: list[str] = []
     for entry in manifest["files"]:
         path = Path(entry["path"])
-        if not entry["present"]:
-            if path.exists():
-                path.unlink()
-            continue
-        copy = directory / entry["copy"]
-        if _sha256(copy) != entry["sha256"]:
-            raise MaintenanceError(f"backup copy is corrupt: {copy.name}")
-        _install(copy, path, entry["mode"], entry["uid"], entry["gid"])
-        if _sha256(path) != entry["sha256"]:
-            raise MaintenanceError(f"restored file does not match backup: {path}")
+        try:
+            if not entry["present"]:
+                path.unlink(missing_ok=True)
+                continue
+            copy = directory / entry["copy"]
+            if _sha256(copy) != entry["sha256"]:
+                failures.append(f"backup copy is corrupt: {copy.name}")
+                continue
+            _install(copy, path, entry["mode"], entry["uid"], entry["gid"])
+            if _sha256(path) != entry["sha256"]:
+                failures.append(f"restored file does not match backup: {path}")
+        except OSError as exc:
+            failures.append(f"could not restore {path}: {exc.strerror or type(exc).__name__}")
+    if failures:
+        raise MaintenanceError("; ".join(failures))
 
 
 def start_and_verify(target: Target, runner: Runner, fetch: Fetcher, sleep: Sleeper) -> None:
-    runner([*_compose(target), "up", "-d", "--no-deps", target.service], check=True, text=True)
+    runner([*_compose(target), "start", target.service], check=True, text=True)
     deadline = time.monotonic() + target.verify_timeout
     pending = list(target.verify)
     while pending:
@@ -325,6 +345,8 @@ def run(
         except (MaintenanceError, subprocess.CalledProcessError, OSError) as rollback_exc:
             report.status = "rollback-failed"
             report.error = f"{report.error}; rollback: {_describe(rollback_exc)}"
+            if directory is not None and "restored" not in report.steps:
+                report.error += "; service left stopped, restore by hand from the backup directory"
         return report
 
 

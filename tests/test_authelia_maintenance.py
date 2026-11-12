@@ -63,7 +63,7 @@ class FakeDocker:
             return subprocess.CompletedProcess(command, self.validate_rc, "", "secret-looking stderr")
         if verb == "stop":
             self.running = self.still_running
-        elif verb == "up":
+        elif verb == "start":
             self.running = True
         elif verb == "ps":
             return subprocess.CompletedProcess(command, 0, "authelia\n" if self.running else "", "")
@@ -97,7 +97,7 @@ def test_successful_transaction_backs_up_then_applies(tmp_path: Path) -> None:
     report = run(target, apply=True, runner=docker, fetch=fetch_ok, sleep=no_sleep, now=NOW)
 
     assert report.status == "complete", report.error
-    assert docker.verbs() == ["run", "stop", "ps", "up"]
+    assert docker.verbs() == ["run", "stop", "ps", "start"]
     validate = docker.calls[0]
     assert f"{target.candidate}:/config/configuration.yml:ro" in validate
     assert validate[-3:] == ["validate-config", "--config", "/config/configuration.yml"]
@@ -172,7 +172,7 @@ def test_failed_verification_rolls_back_every_file(tmp_path: Path) -> None:
 
     assert report.status == "rolled-back"
     assert "verification failed" in (report.error or "")
-    assert docker.verbs() == ["run", "stop", "ps", "up", "stop", "up"]
+    assert docker.verbs() == ["run", "stop", "ps", "start", "stop", "start"]
     assert target.config.read_text() == "old: true\n"
     assert stat.S_IMODE(target.config.stat().st_mode) == 0o640
     assert target.database.read_bytes() == b"sqlite-original"
@@ -237,3 +237,58 @@ def test_cli_dry_run_and_bad_verify(tmp_path: Path, capsys: pytest.CaptureFixtur
     assert json.loads(capsys.readouterr().out)["status"] == "planned"
     with pytest.raises(SystemExit):
         main([*base, "--verify", "not-a-url"])
+
+
+def test_foreign_owned_file_is_refused_before_stopping(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    target = make_target(tmp_path)
+    docker = FakeDocker()
+    monkeypatch.setattr("agent_homelab.authelia_maintenance.os.geteuid", lambda: target.config.stat().st_uid + 1)
+    with pytest.raises(MaintenanceError, match="owned by another user"):
+        run(target, apply=True, runner=docker, fetch=fetch_ok, sleep=no_sleep, now=NOW)
+    assert docker.calls == []
+
+
+def test_failed_restore_leaves_service_stopped(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import agent_homelab.authelia_maintenance as module
+
+    target = make_target(tmp_path)
+    real_install = module._install
+    calls: list[Path] = []
+
+    def install_then_fail_on_restore(source: Path, destination: Path, mode: int, uid: int, gid: int) -> None:
+        calls.append(destination)
+        if len(calls) > 1 and destination == target.database:
+            raise PermissionError(13, "Permission denied")
+        real_install(source, destination, mode, uid, gid)
+
+    def down(url: str, timeout: float) -> int:
+        return 0
+
+    monkeypatch.setattr(module, "_install", install_then_fail_on_restore)
+    docker = FakeDocker()
+    report = run(target, apply=True, runner=docker, fetch=down, sleep=no_sleep, now=NOW)
+
+    assert report.status == "rollback-failed"
+    assert "service left stopped" in (report.error or "")
+    assert docker.verbs() == ["run", "stop", "ps", "start", "stop"]
+    # Every other file was still restored.
+    assert target.config.read_text() == "old: true\n"
+    assert target.key_inputs[0].read_text() == "synthetic-key-material\n"
+
+
+def test_installed_temp_file_is_never_world_readable(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import agent_homelab.authelia_maintenance as module
+
+    target = make_target(tmp_path)
+    seen: list[int] = []
+    real_chmod = module.os.chmod
+
+    def spy_chmod(path: object, mode: int, **kwargs: object) -> None:
+        if str(path).endswith(".agent-homelab-tmp"):
+            seen.append(stat.S_IMODE(Path(str(path)).stat().st_mode))
+        real_chmod(path, mode, **kwargs)
+
+    monkeypatch.setattr(module.os, "chmod", spy_chmod)
+    report = run(target, apply=True, runner=FakeDocker(), fetch=fetch_ok, sleep=no_sleep, now=NOW)
+    assert report.status == "complete"
+    assert seen and all(mode == 0o600 for mode in seen)
