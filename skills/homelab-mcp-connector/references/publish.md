@@ -20,7 +20,7 @@ Authelia client changes belong in the issuer owner's single change window (see `
 
 ## 1. Tunnel hostname
 
-Add one ingress rule before the catch-all in a staged copy of the cloudflared config, validate it, promote it, then restart cloudflared:
+Add one ingress rule before the catch-all in a staged copy of the cloudflared config, validate it, promote it, then restart cloudflared. A new hostname is picked up only after a restart. When cloudflared is a system unit, that needs sudo; run it interactively with `ssh -t <edge> 'sudo systemctl restart <cloudflared-unit>'`, because without `-t` sudo fails with "a terminal is required":
 
 ```yaml
 ingress:
@@ -59,6 +59,30 @@ NoNewPrivileges=yes
 ```
 
 `FreeBind=yes` is required: at boot the socket starts before Docker creates the gateway address, and without it the unit fails permanently with `Cannot assign requested address`.
+
+### 2a. MCP service on another machine (reverse SSH relay)
+
+When the MCP service runs on a machine behind NAT (for example a home PC) and the edge node can't reach it, that machine dials out to the edge. The edge then treats the relay port as its local upstream:
+
+```ini
+# on the service machine: <name>-edge-relay.service (user unit)
+[Unit]
+After=<mcp-service>.service
+Wants=<mcp-service>.service
+
+[Service]
+ExecStart=/usr/bin/ssh -NT -o BatchMode=yes -o ExitOnForwardFailure=yes -o ForwardAgent=no \
+  -o ServerAliveInterval=15 -o ServerAliveCountMax=3 \
+  -R 127.0.0.1:<relay-port>:127.0.0.1:<mcp-port> <edge-ssh-alias>
+Restart=always
+RestartSec=10
+```
+
+On the edge, point the bridge socket's `systemd-socket-proxyd` at `127.0.0.1:<relay-port>` instead of the local service. In the private inventory this is the upstream `{node: <edge>, port: <relay-port>, bridge: {...}}`, so `agent-homelab render` produces the routers unchanged.
+
+- Bind the remote side to `127.0.0.1` only. `ExitOnForwardFailure=yes` makes a taken port fail loudly instead of running with no forward.
+- Before the relay is up, the route gives `502`/`504`. That's expected; `check_mcp_route.py` passes once the relay and the service both run.
+- The relay forwards only the OAuth-validating front (the service that checks bearer tokens), never an unauthenticated internal listener.
 
 ## 3. Traefik routers
 
