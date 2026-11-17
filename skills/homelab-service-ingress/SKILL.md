@@ -13,6 +13,7 @@ The service inventory is the authority. Route reachability and application proxy
 | File | Read when |
 |---|---|
 | [references/application-proxy-checks.md](references/application-proxy-checks.md) | Validating an application after Traefik begins routing it |
+| [references/hand-maintained-bastion-edge.md](references/hand-maintained-bastion-edge.md) | The generator cannot map the edge node, or a generic apply would replace the live Traefik tree |
 
 ## Workflow
 
@@ -42,7 +43,8 @@ If routing fails, classify the failing layer before editing: raw upstream, origi
 - A public `404` usually means the edge router or Host rule is absent; `502` usually means origin reachability failed.
 - An unauthenticated `200` on a protected service means the auth boundary is missing.
 - Fix absolute raw-port URLs in the application, not by hiding them with unrelated shared proxy rewrites.
-- Update inventory and rerender; do not hand-edit installed generated YAML.
+- Update inventory and rerender; do not hand-edit installed generated YAML. Exception: when the generator cannot map the edge node, follow the precedent-copy procedure in the hand-maintained edge reference (backups, surgical edits) instead of a whole-tree apply.
+- A Docker-hosted Traefik reaches host bridge ports only through per-port ufw allows. Test from inside the container before suspecting the router.
 
 ## Related skills
 
