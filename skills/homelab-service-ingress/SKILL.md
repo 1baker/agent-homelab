@@ -13,6 +13,7 @@ The service inventory is the authority. Route reachability and application proxy
 | File | Read when |
 |---|---|
 | [references/application-proxy-checks.md](references/application-proxy-checks.md) | Validating an application after Traefik begins routing it |
+| [references/hand-maintained-bastion-edge.md](references/hand-maintained-bastion-edge.md) | A tunnel-edge route still fails after its files are in place: layer probes, container-to-host firewall, DNS without `cert.pem` |
 
 ## Workflow
 
@@ -43,6 +44,7 @@ If routing fails, classify the failing layer before editing: raw upstream, origi
 - An unauthenticated `200` on a protected service means the auth boundary is missing.
 - Fix absolute raw-port URLs in the application, not by hiding them with unrelated shared proxy rewrites.
 - Update inventory and rerender; do not hand-edit installed generated YAML.
+- A containerized Traefik may reach host bridge ports only through per-port firewall allows. Probe from inside the container before suspecting the router.
 
 ## Related skills
 
