@@ -59,11 +59,11 @@ def dry_run(now, last_good, polls, disabled, attempts):
         times.append(at)
     if times[0] <= last_good.at or times[-1] != now:
         return "unqualified_polls"
-    if any(not 120 <= later - earlier <= 180 for earlier, later in zip(times, times[1:])):
+    if any(not 120 <= later - earlier <= 180 for earlier, later in zip(times, times[1:], strict=False)):
         return "unqualified_polls"
     if type(attempts) is not tuple or any(not _nonnegative(t) or t > now for t in attempts):
         return "unknown_attempts"
-    if any(later <= earlier for earlier, later in zip(attempts, attempts[1:])):
+    if any(later <= earlier for earlier, later in zip(attempts, attempts[1:], strict=False)):
         return "unknown_attempts"
     if attempts and now - attempts[-1] < 1200:
         return "cooldown"
