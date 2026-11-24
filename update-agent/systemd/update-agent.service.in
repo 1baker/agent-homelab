@@ -1,0 +1,12 @@
+[Unit]
+Description=Bastion update-agent read-only dry-run planner (uninstalled template)
+ConditionPathExists=!%h/.config/update-agent/DISABLE
+
+[Service]
+Type=oneshot
+UMask=0077
+ExecStart=/usr/bin/python3 "@SOURCE_DIR@/update-agent/update_agent.py" --dry-run --inventory %h/.config/update-agent/inventory.json
+TimeoutStartSec=240
+NoNewPrivileges=true
+PrivateTmp=true
+# This template has no apply mode. Review and a watched run precede enablement.

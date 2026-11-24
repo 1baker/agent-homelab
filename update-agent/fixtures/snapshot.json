@@ -1,0 +1,81 @@
+{
+  "schema": "update-agent.snapshot.v1",
+  "at": 1795507200,
+  "inventory": {
+    "schema": "update-agent.inventory.v1",
+    "home": "home",
+    "windows": "home-windows",
+    "distro": "ExampleLinux",
+    "tools": {
+      "codex": {
+        "method": "npm",
+        "channel": "latest"
+      },
+      "claude": {
+        "method": "native",
+        "channel": "stable"
+      }
+    },
+    "restore_wrapper": "/opt/example/bin/reviewed-byobu-restore",
+    "restore_wrapper_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "startup_wrapper": "/opt/example/bin/start-respecting-holds",
+    "startup_wrapper_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "restore_snapshot": "/opt/example/state/byobu.snapshot",
+    "hold_paths": [
+      ".config/example/ETF-HOLD",
+      ".config/example/STARTUP-HOLD"
+    ],
+    "services": [
+      "example-agent.service"
+    ],
+    "tabs": [
+      {
+        "session": "example",
+        "window": "@1",
+        "pane": "%1",
+        "kind": "codex",
+        "id": "00000000-0000-4000-8000-000000000001",
+        "profile": "ops"
+      },
+      {
+        "session": "example",
+        "window": "@2",
+        "pane": "%2",
+        "kind": "claude",
+        "id": "00000000-0000-4000-8000-000000000002",
+        "profile": "claude"
+      },
+      {
+        "session": "example",
+        "window": "@3",
+        "pane": "%3",
+        "kind": "shell"
+      }
+    ]
+  },
+  "versions": {
+    "codex": {
+      "installed": "codex-cli 1.2.3",
+      "available": "\"1.2.4\""
+    },
+    "claude": {
+      "installed": "2.3.4 (Claude Code)",
+      "available": "\"2.3.5\""
+    }
+  },
+  "busy": {
+    "at": 1795507200,
+    "reasons": []
+  },
+  "human_present": false,
+  "tmux": "example\t@1\t%1\t/srv/example/project\t00000000-0000-4000-8000-000000000001\t\nexample\t@2\t%2\t/srv/example/project with spaces\t\t00000000-0000-4000-8000-000000000002\nexample\t@3\t%3\t/srv/example\t\t",
+  "holds": {
+    ".config/example/ETF-HOLD": true,
+    ".config/example/STARTUP-HOLD": false
+  },
+  "services": {
+    "example-agent.service": "active"
+  },
+  "restore_wrapper_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "startup_wrapper_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+}
