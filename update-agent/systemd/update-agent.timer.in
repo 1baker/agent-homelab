@@ -1,13 +1,2 @@
-[Unit]
-Description=Update-agent checks every 15 minutes, 01:00 through 05:00 Central
-
-[Timer]
-OnCalendar=*-*-* 01..04:00/15:00 America/Chicago
-OnCalendar=*-*-* 05:00:00 America/Chicago
-AccuracySec=1s
-RandomizedDelaySec=0
-Persistent=false
-Unit=update-agent.service
-
-[Install]
-WantedBy=timers.target
+# Inert design artifact for #375. Intentionally has no unit sections,
+# schedule or install target. The decision predicate applies at any hour.

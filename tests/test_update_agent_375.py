@@ -1,393 +1,561 @@
-"""Offline acceptance tests. No SSH, services, binaries or real journals are used."""
+"""Public fixture-only contract for PR11. No live adapters or unit execution."""
 
 import copy
 import importlib.util
 import io
 import json
-import stat
-import tempfile
 import unittest
-from concurrent.futures import ThreadPoolExecutor
 from contextlib import redirect_stdout
 from pathlib import Path
-from types import SimpleNamespace
-from unittest.mock import patch
 
 MODULE = Path(__file__).parents[1] / "update-agent" / "update_agent.py"
 SPEC = importlib.util.spec_from_file_location("update_agent", MODULE)
 agent = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(agent)
 FIXTURES = MODULE.parent / "fixtures"
-SNAPSHOT = json.loads((FIXTURES / "snapshot.json").read_text())
-NOW = SNAPSHOT["at"]
 
 
-class IdleGateTests(unittest.TestCase):
-    def test_all_five_busy_signals_refuse_idle(self):
+def fixture():
+    return json.loads((FIXTURES / "snapshot.json").read_text())
+
+
+def result(raw):
+    now = max([raw["pre"]["now"]] + [event["at"] for event in raw["trace"]])
+    return agent.build_plan(raw, now)
+
+
+def receipt(raw, schema, when, **fields):
+    return dict(
+        schema=f"fixture.{schema}.v1", binding=copy.deepcopy(raw["binding"]), at=when, expires=when + 300, **fields
+    )
+
+
+def append(raw, kind, **fields):
+    t = raw["trace"][-1]["at"] + 1
+    event = receipt(raw, "event", t, kind=kind, epoch="epoch-A", **fields)
+    event.update(sequence=len(raw["trace"]) + 1, prior_sequence=len(raw["trace"]), writer_generation="op-A")
+    raw["trace"].append(event)
+    return event
+
+
+def intent(raw, step):
+    event = append(raw, "intent", step=step, operation_id=step + "-1")
+    gate = copy.deepcopy(raw["pre"])
+    gate.update(boundary=step, opened=event["at"])
+    gate["presence"].update(at=event["at"], boundary=step)
+    event["gate"] = gate
+    if step == "shutdown":
+        event["recheck"] = receipt(
+            raw,
+            "C4",
+            event["at"],
+            epoch=event["epoch"],
+            drains=copy.deepcopy(raw["trace"][1]["drains"]),
+            protected_effect_pending=False,
+        )
+    if step == "start_distro":
+        event["needs_wake"] = False
+    if step == "resume_dispatcher":
+        event.update(current_dispatcher="stop-A", other_stop=False, disposition="release_own")
+    return event
+
+
+def ack(raw, step, kind="ack"):
+    event = append(raw, kind, step=step, operation_id=step + "-1", outcome="done", observed=True, durable_readback=True)
+    if step == "stop_dispatcher":
+        event["written_generation"] = "stop-A"
+    if step == "stop_dispatcher" or step.startswith("update_") or step == "shutdown":
+        p = copy.deepcopy(raw["pre"]["presence"])
+        p.update(at=event["at"], boundary=step)
+        event["effect_started_at"] = event["at"]
+        event["post_presence"] = p
+    if step.startswith("update_"):
+        event.update(tool=step.removeprefix("update_"), before="1.0.0", target="1.0.1", observed_version="1.0.1")
+    if step == "resume_dispatcher":
+        event["released_generation"] = "stop-A"
+    if step == "resume_tabs":
+        manifest = raw["trace"][3]["R3"]
+        event.update(
+            restored_owners=[r["owner"] for r in manifest["rows"]],
+            manifest_digest=manifest["manifest_digest"],
+            wrapper_only=True,
+        )
+    if step == "report":
+        event["released_fence"] = "epoch-A"
+        event["released_holds"] = {
+            "hold:" + p: g
+            for p, g in raw["trace"][0]["startup_holds"].items()
+            if raw["current_generations"]["hold:" + p] == g
+        }
+    return event
+
+
+def complete(raw, steps):
+    for step in steps:
+        intent(raw, step)
+        ack(raw, step)
+
+
+def verification(raw, when):
+    manifest = raw["trace"][3]["R3"]
+    boot = "boot-B"
+    common = dict(epoch="epoch-A", new_boot=boot, manifest_digest=manifest["manifest_digest"])
+    rows = []
+    for row in manifest["rows"]:
+        rows.append(
+            receipt(
+                raw,
+                "row",
+                when,
+                **common,
+                owner=row["owner"],
+                observed_identity=copy.deepcopy(row),
+                continuity=True,
+                caller=row.get("caller"),
+                non_consuming=True,
+                method="ops_status",
+                tools=["ops_status"],
+            )
+        )
+    vs = {"codex": "1.0.1", "claude": "1.0.1"}
+    return receipt(
+        raw,
+        "verification",
+        when,
+        **common,
+        installed=vs,
+        running=dict(vs),
+        hold_states=raw["inventory_snapshot"]["holds"],
+        service_states=raw["inventory_snapshot"]["services"],
+        service_enabled=raw["inventory_snapshot"]["service_enabled"],
+        timer_states=raw["inventory_snapshot"]["timers"],
+        holds_preserved=True,
+        ETF_never_started=True,
+        rows=rows,
+    )
+
+
+class AdmissionTests(unittest.TestCase):
+    def test_legacy_input_is_never_eligible(self):
+        p = agent.build_plan(fixture()["inventory_snapshot"], 0)
+        self.assertFalse(p["eligible"])
+        self.assertEqual(p["fixture_state"], "HOLD")
+        self.assertNotIn('["claude", "--resume"', json.dumps(p))
+
+    def test_busy_shape_boundary_and_unknown(self):
+        now = 1000
+        base = dict(seq=1, at=700, busy=False, reasons=[])
+        self.assertEqual(agent.idle_gate(base, now), "idle")
+        for delta in [
+            dict(at=699),
+            dict(at=1001),
+            dict(seq=True),
+            dict(busy=True),
+            dict(reasons=["helper"]),
+            dict(extra=1),
+            dict(reasons=["x"]),
+        ]:
+            self.assertNotEqual(agent.idle_gate(dict(base, **delta), now), "idle")
+        self.assertNotEqual(agent.idle_gate(dict(at=401, reasons=[]), now), "idle")
         busy = json.loads((FIXTURES / "busy-state.json").read_text())
-        self.assertEqual(agent.idle_gate(busy, NOW), "busy:turn,handoff,pro,helper,waiter")
-        for signal in ("turn", "handoff", "pro", "helper", "waiter"):
-            with self.subTest(signal=signal):
-                self.assertEqual(agent.idle_gate({"at": NOW, "reasons": [signal]}, NOW), "busy:" + signal)
+        self.assertEqual(agent.idle_gate(busy, busy["at"]), "busy")
 
-    def test_only_fresh_complete_empty_signal_is_idle(self):
-        self.assertEqual(agent.idle_gate({"at": NOW, "reasons": []}, NOW), "idle")
-        self.assertEqual(agent.idle_gate({"at": NOW - 599, "reasons": []}, NOW), "idle")
-        for state in (None, {}, [], {"at": NOW}, {"at": NOW, "reasons": [], "extra": False},
-                      {"at": NOW, "reasons": ["unknown"]}, {"at": NOW, "reasons": ""},
-                      {"at": NOW, "reasons": ["pro", "turn"]}, {"at": NOW, "reasons": ["pro", "pro"]},
-                      {"at": NOW - 600, "reasons": []}, {"at": NOW + 1, "reasons": []},
-                      {"at": True, "reasons": []}):
-            with self.subTest(state=state):
-                self.assertNotEqual(agent.idle_gate(state, NOW), "idle")
+    def test_any_time_ready_and_live_hold(self):
+        def shifted(value, seconds):
+            if isinstance(value, list):
+                return [shifted(item, seconds) for item in value]
+            if isinstance(value, dict):
+                return {
+                    k: v + seconds
+                    if k in ("at", "expires", "opened", "now", "last_input_time")
+                    else shifted(v, seconds)
+                    for k, v in value.items()
+                }
+            return value
 
-    def test_human_override_and_unknown_refuse_idle(self):
-        for override in (True, None, 0, "false"):
-            self.assertEqual(agent.idle_gate(SNAPSHOT["busy"], NOW, override), "human_present_or_unknown")
+        for shift in (0, 12 * 3600):
+            p = result(shifted(fixture(), shift))
+            self.assertEqual(p["fixture_state"], "READY")
+            self.assertFalse(p["eligible"])
+            self.assertEqual(p["live_status"], "HOLD")
 
-    def test_CT_window_and_fall_back_repeated_hour(self):
-        from datetime import datetime
+    def test_trace_a_and_frontier_controls(self):
+        for case in (
+            "trace_A",
+            "uncertainty",
+            "pre_gate",
+            "future",
+            "wrong_boot",
+            "no_notice",
+            "digest_missing",
+            "too_soon",
+            "unknown_u",
+            "stale_C1",
+            "ETF_active",
+            "ETF_hold_missing",
+            "C2_unknown",
+            "DISABLE",
+            "unqualified_version",
+        ):
+            with self.subTest(case=case):
+                raw = fixture()
+                gate = raw["pre"]
+                t = gate["now"]
+                p = gate["presence"]
+                if case == "trace_A":
+                    raw["notice"]["at"] = t - 1800
+                    p["last_input_time"] = t - 1500
+                if case == "uncertainty":
+                    raw["notice"]["at"] = t - 1800
+                    p["last_input_time"] = t - 1801
+                if case == "pre_gate":
+                    p["at"] -= 1
+                if case == "future":
+                    p["at"] += 1
+                if case == "wrong_boot":
+                    p["binding"]["old_boot"] = "foreign"
+                if case == "no_notice":
+                    raw["notice"]["journaled"] = False
+                if case == "digest_missing":
+                    raw["notice"]["digest_confirmed"] = False
+                if case == "too_soon":
+                    raw["notice"]["at"] += 1
+                if case == "unknown_u":
+                    p["u"] = None
+                if case == "stale_C1":
+                    gate["busy"]["at"] -= 301
+                if case == "ETF_active":
+                    gate["etf"]["families"]["etf-agent-*"] = "active"
+                if case == "ETF_hold_missing":
+                    gate["etf"]["hold_present"] = False
+                if case == "C2_unknown":
+                    gate["sleep_intended"] = None
+                if case == "DISABLE":
+                    gate["disabled"] = True
+                if case == "unqualified_version":
+                    raw["version_read"]["tools"]["claude"]["side_effect_free_observation"] = False
+                decision = result(raw)
+                self.assertEqual(decision["fixture_state"], "HOLD")
+                self.assertEqual(decision["effects"], 0)
 
-        for iso, expected in (("2026-11-24T06:59:59+00:00", "outside_01_05_CT"),
-                              ("2026-11-24T07:00:00+00:00", "in_window"),
-                              ("2026-11-24T10:59:59+00:00", "in_window"),
-                              ("2026-11-24T11:00:00+00:00", "outside_01_05_CT"),
-                              ("2026-11-01T06:30:00+00:00", "in_window"),
-                              ("2026-11-01T07:30:00+00:00", "in_window")):
-            self.assertEqual(agent.window_gate(int(datetime.fromisoformat(iso).timestamp())), expected)
+    def test_notice_history_and_suspension(self):
+        raw = fixture()
+        n = raw["notice"]
+        raw["history"]["prior_attempts"] = [
+            dict(
+                attempt="A",
+                posted_at=n["at"] - 60,
+                update_id=n["update_id"],
+                outcome="presence_cancelled",
+                ended_at=n["at"] - 1,
+            )
+        ]
+        self.assertEqual(result(raw)["reason"], "notice_cooldown")
+        raw["history"]["prior_attempts"] = [
+            dict(
+                attempt=str(i),
+                posted_at=n["at"] - (4 + i * 4) * 3600,
+                ended_at=n["at"] - 1 - i * 14400,
+                outcome="presence_cancelled",
+                update_id=n["update_id"],
+            )
+            for i in range(3)
+        ]
+        self.assertEqual(result(raw)["reason"], "presence_daily_limit")
+        raw["history"].update(prior_attempts=[], suspended=True)
+        self.assertEqual(result(raw)["fixture_state"], "HOLD")
 
+    def test_admission_is_not_readiness(self):
+        raw = fixture()
+        raw["trace"] = []
+        self.assertEqual(result(raw)["fixture_state"], "ADMISSION")
+        raw["trace"] = [fixture()["trace"][-1]]
+        self.assertEqual(result(raw)["fixture_state"], "HOLD")
 
-class SnapshotTests(unittest.TestCase):
-    def test_matrix_preserves_UUIDs_profiles_and_paths(self):
-        _, tabs = agent.parse_snapshot(SNAPSHOT)
-        self.assertEqual([t["id"] for t in tabs[:2]],
-                         ["00000000-0000-4000-8000-000000000001", "00000000-0000-4000-8000-000000000002"])
-        self.assertEqual(tabs[0]["profile"], "ops")
-        self.assertEqual(tabs[1]["cwd"], "/srv/example/project with spaces")
-        self.assertTrue(SNAPSHOT["holds"][".config/example/ETF-HOLD"])
-
-    def test_reject_missing_changed_duplicate_and_unmapped_panes(self):
-        for operation in ("missing", "changed", "duplicate", "unmapped", "wrong_kind", "malformed"):
-            raw = copy.deepcopy(SNAPSHOT)
-            if operation == "missing":
-                raw["tmux"] = "\n".join(raw["tmux"].splitlines()[:-1])
-            elif operation == "changed":
-                raw["tmux"] = raw["tmux"].replace("000000000001", "000000000099")
-            elif operation == "duplicate":
-                raw["inventory"]["tabs"].append(raw["inventory"]["tabs"][0])
-            elif operation == "unmapped":
-                raw["inventory"]["tabs"].pop()
-            elif operation == "wrong_kind":
-                raw["inventory"]["tabs"][0]["kind"] = "shell"
-            else:
-                raw["tmux"] = "example\t@1"
-            with self.subTest(operation=operation), self.assertRaises(ValueError):
-                agent.parse_snapshot(raw)
-
-    def test_unknown_inventory_and_unsafe_alias_refused(self):
-        for key, value in (("schema", "v0"), ("home", "-oProxyCommand=bad"), ("home", "home;bad"),
-                           ("hold_paths", ["../other"]), ("services", ["--help"]),
-                           ("restore_wrapper_sha256", "unknown")):
-            cfg = copy.deepcopy(SNAPSHOT["inventory"])
-            cfg[key] = value
-            with self.subTest(key=key), self.assertRaises(ValueError):
-                agent.validate_inventory(cfg)
-
-    def test_real_collector_uses_readonly_SSH_and_preserves_trailing_tabs(self):
-        # Execute the actual remote collector against temporary synthetic files
-        # and a process fake. The trailing empty tmux fields must survive.
-        cfg = copy.deepcopy(SNAPSHOT["inventory"])
-        commands = []
-
-        def process(argv, **kwargs):
-            commands.append(argv)
-            if argv[0] == "tmux":
-                return SimpleNamespace(returncode=0, stdout=SNAPSHOT["tmux"] + "\n")
-            if argv[0] == "systemctl":
-                return SimpleNamespace(returncode=3, stdout="inactive\n")
-            return SimpleNamespace(returncode=0, stdout="1.0.0\n")
-
-        with tempfile.TemporaryDirectory() as directory:
-            output = io.StringIO()
-            with (
-                patch("pathlib.Path.home", return_value=Path(directory)),
-                patch("subprocess.run", side_effect=process),
-                patch("urllib.request.urlopen",
-                      side_effect=lambda *a, **k: io.BytesIO(b'{"latest":"9.0.0","stable":"8.0.0"}')),
-                patch("sys.argv", ["-", json.dumps(cfg)]),
-                redirect_stdout(output),
-            ):
-                exec(compile(agent.COLLECTOR, "<collector>", "exec"), {})  # noqa: S102 - trusted source constant
-        raw = json.loads(output.getvalue())
-        self.assertEqual(raw["tmux"], SNAPSHOT["tmux"])
-        self.assertEqual(raw["services"]["example-agent.service"], "inactive")
-        self.assertIsNone(raw["busy"])
-        self.assertEqual(agent.idle_gate(raw["busy"], NOW), "missing_or_unknown_busy_state")
-        self.assertTrue(all(c[0] in ("codex", "claude", "tmux", "systemctl") for c in commands))
-        self.assertTrue(all(c[1] == "--version" for c in commands if c[0] in ("codex", "claude")))
-        self.assertTrue(all(c[1:3] == ["--user", "is-active"] for c in commands if c[0] == "systemctl"))
-
-    def test_SSH_collect_is_fixed_program_and_quotes_inventory_as_data(self):
-        calls = []
-
-        def runner(argv, **kwargs):
-            calls.append((argv, kwargs))
-            return SimpleNamespace(stdout=json.dumps(SNAPSHOT))
-
-        self.assertEqual(agent.collect(SNAPSHOT["inventory"], runner), SNAPSHOT)
-        argv, kwargs = calls[0]
-        self.assertEqual(argv[:3], ["ssh", "-o", "BatchMode=yes"])
-        self.assertIn("StrictHostKeyChecking=yes", argv)
-        self.assertEqual(argv[-2], "home")
-        self.assertEqual(kwargs["input"], agent.COLLECTOR)
-        self.assertTrue(kwargs["check"])
-
-
-class JournalTests(unittest.TestCase):
-    def setUp(self):
-        self.temporary = tempfile.TemporaryDirectory()
-        self.addCleanup(self.temporary.cleanup)
-        self.path = Path(self.temporary.name) / "2026-11-24.json"
-        self.journal = agent.Journal(self.path)
-        self.journal.reserve(SNAPSHOT, NOW)
-
-    def test_exclusive_nightly_reservation_and_private_permissions(self):
-        with self.assertRaises(ValueError):
-            self.journal.reserve(SNAPSHOT, NOW)
-        self.assertEqual(stat.S_IMODE(self.path.stat().st_mode), 0o600)
-
-    def test_interruption_before_during_or_after_update_always_resumes_at_verify(self):
-        self.assertEqual(self.journal.resume_steps(), ("verify_tabs", "resume_dispatcher", "report"))
-        self.journal.record("stop_dispatcher", "started")
-        self.journal.record("stop_dispatcher", "done")
-        self.journal.record("update", "started")
-        self.assertEqual(agent.Journal(self.path).resume_steps()[0], "verify_tabs")
-        self.journal.record("update", "UNKNOWN")
-        with self.assertRaises(ValueError):
-            agent.Journal(self.path).record("update", "started")
-        self.assertNotIn("shutdown", self.journal.resume_steps())
-
-    def test_concurrent_update_reservation_has_exactly_one_winner(self):
-        self.journal.record("stop_dispatcher", "started")
-        self.journal.record("stop_dispatcher", "done")
-        def reserve_once(_):
-            try:
-                agent.Journal(self.path).record("update", "started")
-                return True
-            except ValueError:
-                return False
-
-        with ThreadPoolExecutor(max_workers=2) as pool:
-            self.assertEqual(sum(pool.map(reserve_once, range(2))), 1)
-        self.assertEqual(len(self.journal.read()["events"]), 3)
-
-    def test_no_dispatcher_resume_without_successful_verification(self):
-        with self.assertRaises(ValueError):
-            self.journal.record("resume_dispatcher", "started")
-        self.journal.record("verify_tabs", "started")
-        self.journal.record("verify_tabs", "UNKNOWN")
-        with self.assertRaises(ValueError):
-            self.journal.record("resume_dispatcher", "started")
-
-    def test_complete_run_is_not_reopened_or_updated(self):
-        for step in agent.STEPS:
-            self.journal.record(step, "started")
-            self.journal.record(step, "done")
-        self.assertEqual(agent.Journal(self.path).resume_steps(), ())
-        with self.assertRaises(ValueError):
-            self.journal.record("update", "started")
-
-    def test_corruption_and_changed_snapshots_fail_closed(self):
-        data = self.journal.read()
-        data["snapshot"]["at"] += 1
-        self.path.write_text(json.dumps(data))
-        with self.assertRaises(ValueError):
-            self.journal.read()
-
-    def test_effects_cannot_skip_steps_or_finish_without_reservation(self):
-        for step in ("update", "shutdown", "resume_dispatcher", "report"):
-            with self.subTest(step=step), self.assertRaises(ValueError):
-                self.journal.record(step, "started")
-        with self.assertRaises(ValueError):
-            self.journal.record("update", "done")
-
-    def test_recovery_records_interrupted_effect_as_unknown(self):
-        self.journal.record("stop_dispatcher", "started")
-        self.journal.record("stop_dispatcher", "done")
-        self.journal.record("update", "started")
-        agent.Journal(self.path).record("verify_tabs", "started")
-        self.assertEqual(self.journal.read()["events"][-2], {"step": "update", "status": "UNKNOWN"})
-        self.journal.record("verify_tabs", "done")
-        self.journal.record("resume_dispatcher", "started")
-        with self.assertRaises(ValueError):
-            self.journal.record("update", "started")
+    def test_invalid_fleet_and_manifest(self):
+        for case in (
+            "operator",
+            "competitor",
+            "missing_ingress",
+            "uncertain_slot",
+            "expired",
+            "unmapped",
+            "manifest_digest",
+            "legacy_profile",
+            "role_launcher",
+        ):
+            with self.subTest(case=case):
+                raw = fixture()
+                ready = raw["trace"][-1]
+                if case == "operator":
+                    ready["R1"]["survives_chief_loss"] = False
+                if case == "competitor":
+                    ready["R1"]["single_writer"] = False
+                if case == "missing_ingress":
+                    del ready["R2"]["drains"]["native-queue"]
+                if case == "uncertain_slot":
+                    ready["R2"]["drains"]["helpers"]["unknown"] = True
+                if case == "expired":
+                    ready["R1"]["expires"] = raw["pre"]["now"] - 1
+                if case == "manifest_digest":
+                    ready["R1"]["manifest_digest"] = "0" * 64
+                if case in ("unmapped", "legacy_profile", "role_launcher"):
+                    rows = ready["R3"]["rows"]
+                    if case == "unmapped":
+                        rows[1]["pane"] = rows[0]["pane"]
+                    if case == "legacy_profile":
+                        rows[0]["profile"] = None
+                    if case == "role_launcher":
+                        rows[1]["launcher"] = "generic-resume"
+                    for k in ("R1", "R2", "R3"):
+                        ready[k]["manifest_digest"] = agent.digest(rows)
+                raw["trace"][1]["drains"] = copy.deepcopy(ready["R2"]["drains"])
+                raw["trace"][2]["R3"] = copy.deepcopy(ready["R3"])
+                self.assertEqual(result(raw)["fixture_state"], "UNWIND")
 
 
-class PlanTests(unittest.TestCase):
-    def plan(self, raw=None, **kwargs):
-        return agent.build_plan(copy.deepcopy(SNAPSHOT) if raw is None else raw, NOW, **kwargs)
+class RecoveryTests(unittest.TestCase):
+    def test_each_boundary_requires_fresh_sample(self):
+        raw = fixture()
+        gate = intent(raw, "stop_dispatcher")["gate"]
+        gate["presence"]["last_input_time"] = gate["opened"] - 1
+        p = result(raw)
+        self.assertEqual(p["fixture_state"], "UNWIND")
+        self.assertEqual(p["release_matching"], ["hold:.config/example/STARTUP-HOLD", "fence"])
+        self.assertFalse(p["suspend_update"])
+        raw = fixture()
+        complete(raw, ["stop_dispatcher"])
+        gate = intent(raw, "update_codex")["gate"]
+        gate["presence"]["at"] = gate["opened"] - 1
+        raw["current_generations"].update(dispatcher="new-stop", other_stop=True)
+        p = result(raw)
+        self.assertEqual(p["release_matching"], ["hold:.config/example/STARTUP-HOLD", "fence"])
+        self.assertIn("dispatcher", p["preserve"])
 
-    def test_plan_contains_pinned_updates_rollback_holds_and_each_session(self):
-        plan = self.plan()
-        self.assertTrue(plan["eligible"])
-        self.assertEqual(plan["mode"], "DRY-RUN")
-        self.assertEqual([s["step"] for s in plan["steps"]], list(agent.STEPS))
-        self.assertEqual(plan["updates"][0]["command"], ["npm", "install", "--global", "@openai/codex@1.2.4"])
-        self.assertEqual(plan["updates"][0]["rollback"][-1], "@openai/codex@1.2.3")
-        self.assertEqual(plan["updates"][1]["command"], ["claude", "install", "2.3.5"])
-        self.assertEqual(plan["steps"][2]["detail"], ["ssh", "home-windows", "wsl", "--shutdown"])
-        self.assertTrue(plan["holds_preserved"][".config/example/ETF-HOLD"])
-        self.assertEqual(len(plan["steps"][6]["detail"]), 2)
+    def test_five_second_residual_and_presence_race(self):
+        raw = fixture()
+        e = intent(raw, "stop_dispatcher")
+        e["at"] += 6
+        self.assertEqual(result(raw)["fixture_state"], "UNWIND")
+        raw = fixture()
+        e = intent(raw, "stop_dispatcher")
+        ack(raw, "stop_dispatcher")["post_presence"]["last_input_time"] = e["at"]
+        intent(raw, "update_codex")
+        self.assertEqual(result(raw)["reason"], "presence_input")
 
-    def test_gates_missing_busy_disable_stale_hold_and_wrapper_mismatch(self):
-        for key, replacement in (("busy", None), ("human_present", True), ("at", NOW - 601),
-                                 ("holds", {}), ("restore_wrapper_sha256", "b" * 64)):
-            raw = copy.deepcopy(SNAPSHOT)
-            raw[key] = replacement
-            with self.subTest(key=key):
-                self.assertFalse(self.plan(raw)["eligible"])
-        self.assertFalse(self.plan(disabled=True)["eligible"])
+    def test_effect_delayed_after_admitted_intent_retains_fence(self):
+        raw = fixture()
+        admitted = intent(raw, "stop_dispatcher")
+        done = ack(raw, "stop_dispatcher")
+        done["at"] = done["effect_started_at"] = done["post_presence"]["at"] = admitted["at"] + 6
+        outcome = result(raw)
+        self.assertEqual(outcome["fixture_state"], "UNKNOWN")
+        self.assertTrue(outcome["retain_fences"])
 
-    def test_prereleases_unknown_versions_and_shell_text_never_become_commands(self):
-        for bad in ('"2.0.0-beta.1"', '"2.0.0; bad"', "null", '"latest"'):
-            raw = copy.deepcopy(SNAPSHOT)
-            raw["versions"]["codex"]["available"] = bad
-            result = self.plan(raw)
-            self.assertFalse(result["eligible"])
-            self.assertIn("codex_version_unknown", result["blockers"])
+    def test_reused_presence_sample_is_refused_at_another_boundary(self):
+        raw = fixture()
+        intent(raw, "stop_dispatcher")["gate"]["presence"]["boundary"] = "G-pre"
+        self.assertEqual(result(raw)["fixture_state"], "UNWIND")
 
-    def test_unchanged_or_older_channel_never_restarts(self):
-        raw = copy.deepcopy(SNAPSHOT)
-        raw["versions"]["codex"]["available"] = '"1.2.3"'
-        raw["versions"]["claude"]["available"] = '"2.3.3"'
-        self.assertEqual([s["step"] for s in self.plan(raw)["steps"]], ["report"])
+    def test_unknown_intent_cannot_release_or_infer_a_version(self):
+        raw = fixture()
+        complete(raw, ["stop_dispatcher", "update_codex"])
+        intent(raw, "update_claude")
+        p = result(raw)
+        self.assertEqual(p["fixture_state"], "UNKNOWN")
+        self.assertTrue(p["retain_fences"])
+        self.assertEqual(p["last_confirmed_versions"], {"codex": "1.0.1", "claude": "1.0.0"})
+        ack(raw, "update_claude")["outcome"] = "UNKNOWN"
+        intent(raw, "shutdown")
+        self.assertEqual(result(raw)["fixture_state"], "UNKNOWN")
+        raw["trace"].pop()
+        ack(raw, "update_claude", kind="reconcile")
+        self.assertEqual(result(raw)["next_stage"], "shutdown")
 
-    def test_mixed_updates_never_schedule_a_channel_downgrade(self):
-        raw = copy.deepcopy(SNAPSHOT)
-        raw["versions"]["claude"]["available"] = '"2.3.3"'
-        update_step = next(s for s in self.plan(raw)["steps"] if s["step"] == "update")
-        self.assertEqual([item["tool"] for item in update_step["detail"]], ["codex"])
+    def test_changed_hold_generation_is_preserved(self):
+        raw = fixture()
+        key = "hold:.config/example/STARTUP-HOLD"
+        raw["current_generations"][key] = "new-owner-generation"
+        append(raw, "interrupted")
+        plan = result(raw)
+        self.assertEqual(plan["preserve"], [key])
+        self.assertEqual(plan["release_matching"], ["fence"])
+        del raw["current_generations"][key]
+        self.assertTrue(result(raw)["retain_fences"])
 
-    def test_recovery_uses_original_UUIDs_and_skips_all_effect_steps(self):
-        with tempfile.TemporaryDirectory() as directory:
-            journal = agent.Journal(Path(directory) / "2026-11-24.json")
-            journal.reserve(SNAPSHOT, NOW)
-            journal.record("stop_dispatcher", "started")
-            journal.record("stop_dispatcher", "done")
-            journal.record("update", "started")
-            plan = self.plan(journal=journal)
-            self.assertEqual([s["step"] for s in plan["steps"]], ["verify_tabs", "resume_dispatcher", "report"])
-            self.assertEqual(plan["tabs"][0]["id"], SNAPSHOT["inventory"]["tabs"][0]["id"])
-            self.assertEqual(plan["unknown_outcomes"], ["update"])
-            self.assertEqual(plan["verify_expected_versions"], {"codex": "1.2.4", "claude": "2.3.5"})
+    def test_interruption_before_and_after_stop(self):
+        raw = fixture()
+        append(raw, "interrupted")
+        self.assertEqual(result(raw)["release_matching"], ["hold:.config/example/STARTUP-HOLD", "fence"])
+        raw = fixture()
+        complete(raw, ["stop_dispatcher", "update_codex"])
+        append(raw, "interrupted")
+        p = result(raw)
+        self.assertEqual(p["next_stage"], "start_services")
+        self.assertEqual(p["observed_versions"], {"claude": "1.0.0", "codex": "1.0.1"})
 
-    def test_interrupted_dispatcher_resume_is_not_retried(self):
-        with tempfile.TemporaryDirectory() as directory:
-            journal = agent.Journal(Path(directory) / "2026-11-24.json")
-            journal.reserve(SNAPSHOT, NOW)
-            for step in agent.STEPS[:8]:
-                journal.record(step, "started")
-                journal.record(step, "done")
-            journal.record("resume_dispatcher", "started")
-            plan = self.plan(journal=journal)
-            self.assertFalse(plan["eligible"])
-            self.assertEqual([s["step"] for s in plan["steps"]], ["verify_tabs", "report"])
-            self.assertIn("dispatcher_outcome_requires_reconciliation", plan["blockers"])
+    def test_shutdown_rechecks_drain_and_protected_work(self):
+        raw = fixture()
+        complete(raw, ["stop_dispatcher", "update_codex", "update_claude"])
+        event = intent(raw, "shutdown")
+        event["recheck"]["drains"]["helpers"]["unknown"] = True
+        self.assertEqual(result(raw)["reason"], "C4_shutdown_recheck")
+        self.assertTrue(result(raw)["retain_fences"])
 
-    def test_per_tab_verification_requires_identity_tools_profile_and_continuity(self):
-        _, tabs = agent.parse_snapshot(SNAPSHOT)
-        receipts = [{**t, "tools": ["codex-ops.inbox_read"], "last_message_continuity": True} for t in tabs[:2]]
-        self.assertEqual([r["result"] for r in agent.verify_tabs(tabs, receipts)], ["PASS", "PASS"])
-        for key, value in (("id", "wrong"), ("profile", "wrong"), ("tools", []),
-                           ("last_message_continuity", False)):
-            observed = copy.deepcopy(receipts)
-            observed[0][key] = value
-            self.assertEqual(agent.verify_tabs(tabs, observed)[0]["result"], "UNKNOWN")
-        self.assertEqual(agent.verify_tabs(tabs, [])[0]["result"], "UNKNOWN")
-        self.assertEqual(agent.verify_tabs(tabs, None)[0]["result"], "UNKNOWN")
-        self.assertEqual(agent.verify_tabs(tabs, [None, "invalid"])[0]["result"], "UNKNOWN")
-        self.assertEqual(agent.verify_tabs(tabs, receipts + [receipts[0]])[0]["result"], "UNKNOWN")
+    def test_prior_dispatcher_stop_is_never_overwritten(self):
+        raw = fixture()
+        raw["inventory_snapshot"]["dispatcher_stopped"] = True
+        intent(raw, "stop_dispatcher")
+        e = ack(raw, "stop_dispatcher")
+        self.assertEqual(result(raw)["fixture_state"], "UNKNOWN")
+        e["written_generation"] = None
+        self.assertEqual(result(raw)["next_stage"], "update_codex")
 
-    def test_offline_CLI_has_no_subprocess_or_writes_and_no_apply_option(self):
-        with tempfile.TemporaryDirectory() as directory:
-            before = (FIXTURES / "snapshot.json").read_bytes()
-            output = io.StringIO()
-            arguments = ["--snapshot", str(FIXTURES / "snapshot.json"), "--now", str(NOW),
-                         "--disable-file", directory + "/DISABLE", "--state-dir", directory + "/state"]
-            with patch.object(agent.subprocess, "run") as run, redirect_stdout(output):
-                self.assertEqual(agent.main(arguments), 0)
-            run.assert_not_called()
-            self.assertEqual(json.loads(output.getvalue())["mode"], "DRY-RUN")
-            self.assertEqual(list(Path(directory).iterdir()), [])
-            self.assertEqual(before, (FIXTURES / "snapshot.json").read_bytes())
-            with self.assertRaises(SystemExit), patch("sys.stderr", io.StringIO()):
-                agent.main(arguments + ["--apply"])
+    def test_confirmed_failed_update_restores_before_verifying(self):
+        raw = fixture()
+        complete(raw, ["stop_dispatcher"])
+        intent(raw, "update_codex")
+        ack(raw, "update_codex").update(outcome="failed", observed_version="1.0.0")
+        self.assertEqual(result(raw)["next_stage"], "start_services")
+        intent(raw, "verify_tabs")
+        self.assertNotIn(result(raw)["fixture_state"], ("VERIFIED", "READY"))
 
-    def test_disable_symlink_prevents_eligibility(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            disable = root / "DISABLE"
-            disable.symlink_to(root / "missing")
-            output = io.StringIO()
-            arguments = ["--snapshot", str(FIXTURES / "snapshot.json"), "--now", str(NOW),
-                         "--disable-file", str(disable), "--state-dir", str(root / "state")]
-            with redirect_stdout(output):
-                self.assertEqual(agent.main(arguments), 0)
-            self.assertFalse(json.loads(output.getvalue())["eligible"])
+    def test_verified_restore_and_foreign_receipts(self):
+        raw = fixture()
+        complete(
+            raw,
+            [
+                "stop_dispatcher",
+                "update_codex",
+                "update_claude",
+                "shutdown",
+                "start_distro",
+                "start_services",
+                "restore_byobu",
+                "resume_tabs",
+            ],
+        )
+        intent(raw, "verify_tabs")
+        event = ack(raw, "verify_tabs")
+        event["verification"] = verification(raw, event["at"])
+        for case in ("caller", "attempt", "config", "tool", "partial", "consuming", "wrong_boot", "running"):
+            with self.subTest(case=case):
+                other = copy.deepcopy(raw)
+                v = other["trace"][-1]["verification"]
+                row = v["rows"][1]
+                if case == "caller":
+                    row["caller"] = "another-tab"
+                if case == "attempt":
+                    row["binding"]["attempt"] = "old"
+                if case == "config":
+                    row["observed_identity"]["config_sha256"] = "9" * 64
+                if case == "tool":
+                    row["tools"] = []
+                if case == "partial":
+                    v["rows"].pop()
+                if case == "consuming":
+                    row["method"] = "inbox_read"
+                if case == "wrong_boot":
+                    v["new_boot"] = raw["binding"]["old_boot"]
+                if case == "running":
+                    v["running"]["claude"] = "1.0.0"
+                p = result(other)
+                self.assertEqual(p["fixture_state"], "UNKNOWN")
+                self.assertTrue(p["retain_fences"])
+        complete(raw, ["resume_dispatcher", "report"])
+        self.assertEqual(result(raw)["fixture_state"], "VERIFIED")
+        self.assertFalse(result(raw)["eligible"])
 
-    def test_completed_night_blocks_a_second_CLI_run(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            journal = agent.Journal(root / "2026-11-24.json")
-            journal.reserve(SNAPSHOT, NOW)
-            for step in agent.STEPS:
-                journal.record(step, "started")
-                journal.record(step, "done")
-            output = io.StringIO()
-            with redirect_stdout(output), patch.object(agent, "collect") as collect:
-                result = agent.main(["--inventory", str(root / "missing"), "--state-dir", str(root),
-                                     "--now", str(NOW), "--disable-file", str(root / "DISABLE")])
-            self.assertEqual(result, 0)
-            self.assertEqual(json.loads(output.getvalue())["blockers"], ["night_already_reserved"])
-            collect.assert_not_called()
-
-    def test_older_unfinished_journal_takes_precedence_over_missing_new_inventory(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            journal = agent.Journal(root / "2026-11-23.json")
-            journal.reserve(SNAPSHOT, NOW - 86400)
-            before = journal.path.read_bytes()
-            output = io.StringIO()
-            with redirect_stdout(output), patch.object(agent, "collect") as collect:
-                result = agent.main(["--inventory", str(root / "missing"), "--state-dir", str(root),
-                                     "--now", str(NOW), "--disable-file", str(root / "DISABLE")])
-            self.assertEqual(result, 0)
-            self.assertEqual([s["step"] for s in json.loads(output.getvalue())["steps"]],
-                             ["verify_tabs", "resume_dispatcher", "report"])
-            self.assertEqual(before, journal.path.read_bytes())
-            collect.assert_not_called()
-
-    def test_multiple_pending_journals_refuse_a_fresh_run(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            agent.Journal(root / "2026-11-23.json").reserve(SNAPSHOT, NOW - 86400)
-            agent.Journal(root / "2026-11-24.json").reserve(SNAPSHOT, NOW)
-            output = io.StringIO()
-            with redirect_stdout(output), patch.object(agent, "collect") as collect:
-                result = agent.main(["--inventory", str(root / "missing"), "--state-dir", str(root),
-                                     "--now", str(NOW), "--disable-file", str(root / "DISABLE")])
-            self.assertEqual(result, 2)
-            self.assertFalse(json.loads(output.getvalue())["eligible"])
-            collect.assert_not_called()
-
-    def test_DISABLE_prevents_collection_even_with_missing_inventory(self):
-        with tempfile.TemporaryDirectory() as directory:
-            disable = Path(directory) / "DISABLE"
-            disable.touch()
-            with patch.object(agent, "collect") as collect, redirect_stdout(io.StringIO()):
-                self.assertEqual(agent.main(["--inventory", directory + "/missing", "--disable-file", str(disable)]), 0)
-            collect.assert_not_called()
+    def test_cli_and_templates_have_no_operational_entrypoint(self):
+        with redirect_stdout(io.StringIO()) as out:
+            self.assertEqual(
+                agent.main(
+                    [
+                        "--dry-run",
+                        "--snapshot",
+                        str(FIXTURES / "snapshot.json"),
+                        "--now",
+                        str(fixture()["pre"]["now"] + 4),
+                    ]
+                ),
+                0,
+            )
+        self.assertEqual(json.loads(out.getvalue())["live_status"], "HOLD")
+        for path in (MODULE.parent / "systemd").glob("*.in"):
+            self.assertTrue(all(not line.strip() or line.startswith("#") for line in path.read_text().splitlines()))
 
 
-if __name__ == "__main__":
-    unittest.main()
+class JournalAndInventoryTests(unittest.TestCase):
+    def test_wrong_writer_or_gap_after_fence_retains_fence(self):
+        for change in ({"writer_generation": "retired"}, {"sequence": 99}, {"epoch": "foreign"}):
+            raw = fixture()
+            raw["trace"][-1].update(change)
+            p = result(raw)
+            self.assertEqual(p["fixture_state"], "UNKNOWN")
+            self.assertTrue(p["retain_fences"])
+
+    def test_unknown_version_no_update_and_downgrade(self):
+        raw = fixture()
+        for observed in raw["version_read"]["tools"].values():
+            observed["available"] = "0.8.4"
+        self.assertEqual(result(raw)["fixture_state"], "SKIP")
+        raw["version_read"]["tools"]["claude"]["available"] = "unknown"
+        self.assertEqual(result(raw)["fixture_state"], "HOLD")
+
+    def test_rollback_requires_observed_original_tool_version(self):
+        raw = fixture()
+        complete(raw, ["stop_dispatcher"])
+        intent(raw, "update_codex")
+        event = ack(raw, "update_codex")
+        event["outcome"] = "rolled_back"
+        self.assertEqual(result(raw)["fixture_state"], "UNKNOWN")
+        event["observed_version"] = "1.0.0"
+        p = result(raw)
+        self.assertEqual(p["next_stage"], "start_services")
+        self.assertEqual(p["tool_stages"]["codex"][-1]["stage"], "rolled_back")
+
+    def test_presence_after_update_preserves_fence_for_rollback_decision(self):
+        raw = fixture()
+        complete(raw, ["stop_dispatcher", "update_codex"])
+        gate = intent(raw, "update_claude")["gate"]
+        gate["presence"]["last_input_time"] = gate["opened"] - 1
+        p = result(raw)
+        self.assertTrue(p["retain_fences"])
+        self.assertEqual(p["rollback_review"], {"codex": "1.0.1"})
+
+    def test_conditional_restore_wake_needs_exact_veto_and_holder(self):
+        raw = fixture()
+        complete(raw, ["stop_dispatcher", "update_codex", "update_claude", "shutdown"])
+        event = intent(raw, "start_distro")
+        event["needs_wake"] = True
+        self.assertEqual(result(raw)["fixture_state"], "UNKNOWN")
+        wake = receipt(
+            raw,
+            "restore_wake",
+            event["at"],
+            epoch="epoch-A",
+            holder="op-A",
+            journal_epoch="epoch-A",
+            journal_holder="op-A",
+            admitted_restore_step=True,
+            disabled=False,
+            sleep_intended=False,
+            veto_read_ok=True,
+        )
+        event["restore_wake"] = wake
+        ack(raw, "start_distro")
+        self.assertEqual(result(raw)["next_stage"], "start_services")
+        wake["sleep_intended"] = True
+        self.assertTrue(result(raw)["retain_fences"])
+        self.assertNotIn("next_stage", result(raw))
+
+    def test_partial_bound_evidence_and_non_consuming_replay(self):
+        raw = fixture()
+        initial = copy.deepcopy(raw)
+        self.assertEqual(result(raw), result(raw))
+        self.assertEqual(initial, raw)
+        raw["pre"]["presence"] = None
+        self.assertEqual(result(raw)["reason"], "P0_binding")
+        raw = fixture()
+        raw["inventory_snapshot"]["tmux"] += "\nother\t@8\t%8\t/empty\t\t"
+        self.assertEqual(result(raw)["fixture_state"], "HOLD")
