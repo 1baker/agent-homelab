@@ -1,0 +1,631 @@
+{
+  "schema": "public-fixture.375.v6",
+  "binding": {
+    "machine": "home",
+    "distro": "ExampleLinux",
+    "old_boot": "boot-A",
+    "attempt": "attempt-A"
+  },
+  "inventory_snapshot": {
+    "schema": "update-agent.snapshot.v1",
+    "at": 1795507200,
+    "inventory": {
+      "schema": "update-agent.inventory.v1",
+      "home": "home",
+      "windows": "home-windows",
+      "distro": "ExampleLinux",
+      "tools": {
+        "codex": {
+          "method": "npm",
+          "channel": "latest"
+        },
+        "claude": {
+          "method": "native",
+          "channel": "stable"
+        }
+      },
+      "restore_wrapper": "/opt/example/bin/reviewed-byobu-restore",
+      "restore_wrapper_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "startup_wrapper": "/opt/example/bin/start-respecting-holds",
+      "startup_wrapper_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      "restore_snapshot": "/opt/example/state/byobu.snapshot",
+      "hold_paths": [
+        ".config/example/ETF-HOLD",
+        ".config/example/STARTUP-HOLD"
+      ],
+      "services": [
+        "example-agent.service"
+      ],
+      "tabs": [
+        {
+          "session": "example",
+          "window": "@1",
+          "pane": "%1",
+          "kind": "codex",
+          "id": "00000000-0000-4000-8000-000000000001",
+          "profile": "ops"
+        },
+        {
+          "session": "example",
+          "window": "@2",
+          "pane": "%2",
+          "kind": "claude",
+          "id": "00000000-0000-4000-8000-000000000002",
+          "profile": "claude"
+        },
+        {
+          "session": "example",
+          "window": "@3",
+          "pane": "%3",
+          "kind": "shell"
+        }
+      ],
+      "timers": [
+        "example-wake.timer"
+      ]
+    },
+    "tmux": "example\t@1\t%1\t/srv/example/project\t00000000-0000-4000-8000-000000000001\t\nexample\t@2\t%2\t/srv/example/project with spaces\t\t00000000-0000-4000-8000-000000000002\nexample\t@3\t%3\t/srv/example\t\t",
+    "holds": {
+      ".config/example/ETF-HOLD": true,
+      ".config/example/STARTUP-HOLD": false
+    },
+    "services": {
+      "example-agent.service": "active"
+    },
+    "restore_wrapper_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "startup_wrapper_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "service_enabled": {
+      "example-agent.service": true
+    },
+    "dispatcher_stopped": false,
+    "timers": {
+      "example-wake.timer": {
+        "enabled": false,
+        "active": false
+      }
+    }
+  },
+  "version_read": {
+    "schema": "fixture.versions.v1",
+    "binding": {
+      "machine": "home",
+      "distro": "ExampleLinux",
+      "old_boot": "boot-A",
+      "attempt": "attempt-A"
+    },
+    "at": 1795507200,
+    "expires": 1795507500,
+    "tools": {
+      "codex": {
+        "method": "npm",
+        "channel": "latest",
+        "side_effect_free_observation": true,
+        "installed": "1.0.0",
+        "available": "1.0.1"
+      },
+      "claude": {
+        "method": "native",
+        "channel": "stable",
+        "side_effect_free_observation": true,
+        "installed": "1.0.0",
+        "available": "1.0.1"
+      }
+    }
+  },
+  "notice": {
+    "schema": "fixture.notice.v1",
+    "binding": {
+      "machine": "home",
+      "distro": "ExampleLinux",
+      "old_boot": "boot-A",
+      "attempt": "attempt-A"
+    },
+    "at": 1795506600,
+    "expires": 1795507500,
+    "headsup_id": "notice-A",
+    "slack_ts": "synthetic:notice",
+    "journaled": true,
+    "digest_confirmed": true,
+    "update_id": "a5fd83e1d49e7b9cebf5c337dff432a318e815561474cc9a7b6c6e479b670312"
+  },
+  "history": {
+    "complete": true,
+    "suspended": false,
+    "prior_attempts": []
+  },
+  "pre": {
+    "opened": 1795507200,
+    "now": 1795507200,
+    "disabled": false,
+    "sleep_intended": false,
+    "busy": {
+      "at": 1795507200,
+      "busy": false,
+      "reasons": [],
+      "seq": 17
+    },
+    "etf": {
+      "complete": true,
+      "hold_present": true,
+      "families": {
+        "etf-agent-*": "inactive",
+        "codex-wake-etf-trading-agent*": "inactive"
+      }
+    },
+    "presence": {
+      "schema": "fixture.P0.v1",
+      "binding": {
+        "machine": "home",
+        "distro": "ExampleLinux",
+        "old_boot": "boot-A",
+        "attempt": "attempt-A"
+      },
+      "at": 1795507200,
+      "expires": 1795507500,
+      "last_input_time": 1795505400,
+      "u": 1,
+      "boundary": "G-pre"
+    },
+    "boundary": "G-pre"
+  },
+  "admission": {
+    "schema": "fixture.admission.v1",
+    "binding": {
+      "machine": "home",
+      "distro": "ExampleLinux",
+      "old_boot": "boot-A",
+      "attempt": "attempt-A"
+    },
+    "at": 1795507200,
+    "expires": 1795507500,
+    "survivor_available": true,
+    "windows_route": true,
+    "exclusive_journal": true,
+    "operator_generation": "op-A",
+    "complete_ingress": true,
+    "participants": [
+      "native-queue",
+      "dispatch",
+      "helpers",
+      "claude-waiter",
+      "browser",
+      "provider"
+    ],
+    "available": [
+      "native-queue",
+      "dispatch",
+      "helpers",
+      "claude-waiter",
+      "browser",
+      "provider"
+    ],
+    "installed_manifest_schema": true,
+    "role_map_valid": true,
+    "owners": {
+      "native-queue": "g1",
+      "dispatch": "g1",
+      "helpers": "g1",
+      "claude-waiter": "g1",
+      "browser": "g1",
+      "provider": "g1"
+    },
+    "role_map": {
+      "claude": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+    },
+    "enrolled_callers": {
+      "example-codex": "tab:example-codex",
+      "example-claude": "tab:example-claude"
+    }
+  },
+  "current_generations": {
+    "fence": "epoch-A",
+    "dispatcher": "stop-A",
+    "other_stop": false,
+    "hold:.config/example/STARTUP-HOLD": "startup-A"
+  },
+  "trace": [
+    {
+      "schema": "fixture.event.v1",
+      "binding": {
+        "machine": "home",
+        "distro": "ExampleLinux",
+        "old_boot": "boot-A",
+        "attempt": "attempt-A"
+      },
+      "at": 1795507201,
+      "expires": 1795507500,
+      "kind": "fence",
+      "epoch": "epoch-A",
+      "sequence": 1,
+      "prior_sequence": 0,
+      "writer_generation": "op-A",
+      "startup_holds": {
+        ".config/example/STARTUP-HOLD": "startup-A"
+      },
+      "etf_hold_path": ".config/example/ETF-HOLD"
+    },
+    {
+      "schema": "fixture.event.v1",
+      "binding": {
+        "machine": "home",
+        "distro": "ExampleLinux",
+        "old_boot": "boot-A",
+        "attempt": "attempt-A"
+      },
+      "at": 1795507202,
+      "expires": 1795507500,
+      "kind": "drain",
+      "epoch": "epoch-A",
+      "drains": {
+        "native-queue": {
+          "epoch": "epoch-A",
+          "owner_generation": "g1",
+          "atomic_fence": true,
+          "preserved_order": true,
+          "outstanding": 0,
+          "unknown": false
+        },
+        "dispatch": {
+          "epoch": "epoch-A",
+          "owner_generation": "g1",
+          "atomic_fence": true,
+          "preserved_order": true,
+          "outstanding": 0,
+          "unknown": false
+        },
+        "helpers": {
+          "epoch": "epoch-A",
+          "owner_generation": "g1",
+          "atomic_fence": true,
+          "preserved_order": true,
+          "outstanding": 0,
+          "unknown": false
+        },
+        "claude-waiter": {
+          "epoch": "epoch-A",
+          "owner_generation": "g1",
+          "atomic_fence": true,
+          "preserved_order": true,
+          "outstanding": 0,
+          "unknown": false
+        },
+        "browser": {
+          "epoch": "epoch-A",
+          "owner_generation": "g1",
+          "atomic_fence": true,
+          "preserved_order": true,
+          "outstanding": 0,
+          "unknown": false
+        },
+        "provider": {
+          "epoch": "epoch-A",
+          "owner_generation": "g1",
+          "atomic_fence": true,
+          "preserved_order": true,
+          "outstanding": 0,
+          "unknown": false
+        }
+      },
+      "sequence": 2,
+      "prior_sequence": 1,
+      "writer_generation": "op-A"
+    },
+    {
+      "schema": "fixture.event.v1",
+      "binding": {
+        "machine": "home",
+        "distro": "ExampleLinux",
+        "old_boot": "boot-A",
+        "attempt": "attempt-A"
+      },
+      "at": 1795507203,
+      "expires": 1795507500,
+      "kind": "manifest",
+      "epoch": "epoch-A",
+      "R3": {
+        "schema": "fixture.R3.v1",
+        "binding": {
+          "machine": "home",
+          "distro": "ExampleLinux",
+          "old_boot": "boot-A",
+          "attempt": "attempt-A"
+        },
+        "at": 1795507203,
+        "expires": 1795507500,
+        "epoch": "epoch-A",
+        "complete": true,
+        "rows": [
+          {
+            "session": "example",
+            "window": "@1",
+            "pane": "%1",
+            "kind": "codex",
+            "id": "00000000-0000-4000-8000-000000000001",
+            "profile": "ops",
+            "cwd": "/srv/example/project",
+            "owner": "example-codex",
+            "settings_generation": "settings-A",
+            "owner_generation": "owner-A",
+            "config_sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            "rollback_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "holds": [],
+            "pending": [],
+            "caller": "tab:example-codex",
+            "expected_tools": [
+              "ops_status"
+            ],
+            "identity_binding": "enrolled",
+            "task_flags": {
+              "goal": false,
+              "stop": false,
+              "parked": false,
+              "private": false,
+              "once": false
+            }
+          },
+          {
+            "session": "example",
+            "window": "@2",
+            "pane": "%2",
+            "kind": "claude",
+            "id": "00000000-0000-4000-8000-000000000002",
+            "profile": "claude",
+            "cwd": "/srv/example/project with spaces",
+            "owner": "example-claude",
+            "settings_generation": "settings-A",
+            "owner_generation": "owner-A",
+            "config_sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            "rollback_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "holds": [],
+            "pending": [],
+            "caller": "tab:example-claude",
+            "expected_tools": [
+              "ops_status"
+            ],
+            "launcher": "byobu-session-state+byobu-claude-role",
+            "role": "claude",
+            "role_manifest_sha256": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+            "identity_binding": "enrolled",
+            "task_flags": {
+              "goal": false,
+              "stop": false,
+              "parked": false,
+              "private": false,
+              "once": false
+            }
+          },
+          {
+            "session": "example",
+            "window": "@3",
+            "pane": "%3",
+            "kind": "shell",
+            "cwd": "/srv/example",
+            "owner": "example-shell",
+            "settings_generation": "settings-A",
+            "owner_generation": "owner-A",
+            "config_sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            "rollback_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "holds": [],
+            "pending": [],
+            "identity_binding": "enrolled",
+            "task_flags": {
+              "goal": false,
+              "stop": false,
+              "parked": false,
+              "private": false,
+              "once": false
+            }
+          }
+        ],
+        "manifest_digest": "9002bca3bb7d835b7b137086cd20df3c5c7f1d377df29e03e7a9e6f58018d4ae"
+      },
+      "sequence": 3,
+      "prior_sequence": 2,
+      "writer_generation": "op-A"
+    },
+    {
+      "schema": "fixture.event.v1",
+      "binding": {
+        "machine": "home",
+        "distro": "ExampleLinux",
+        "old_boot": "boot-A",
+        "attempt": "attempt-A"
+      },
+      "at": 1795507204,
+      "expires": 1795507500,
+      "kind": "ready",
+      "epoch": "epoch-A",
+      "R1": {
+        "schema": "fixture.R1.v1",
+        "binding": {
+          "machine": "home",
+          "distro": "ExampleLinux",
+          "old_boot": "boot-A",
+          "attempt": "attempt-A"
+        },
+        "at": 1795507203,
+        "expires": 1795507500,
+        "epoch": "epoch-A",
+        "operator_generation": "op-A",
+        "outside_WSL": true,
+        "survives_chief_loss": true,
+        "single_writer": true,
+        "journal_readback": true,
+        "manifest_digest": "9002bca3bb7d835b7b137086cd20df3c5c7f1d377df29e03e7a9e6f58018d4ae"
+      },
+      "R2": {
+        "schema": "fixture.R2.v1",
+        "binding": {
+          "machine": "home",
+          "distro": "ExampleLinux",
+          "old_boot": "boot-A",
+          "attempt": "attempt-A"
+        },
+        "at": 1795507202,
+        "expires": 1795507500,
+        "epoch": "epoch-A",
+        "participants": [
+          "native-queue",
+          "dispatch",
+          "helpers",
+          "claude-waiter",
+          "browser",
+          "provider"
+        ],
+        "drains": {
+          "native-queue": {
+            "epoch": "epoch-A",
+            "owner_generation": "g1",
+            "atomic_fence": true,
+            "preserved_order": true,
+            "outstanding": 0,
+            "unknown": false
+          },
+          "dispatch": {
+            "epoch": "epoch-A",
+            "owner_generation": "g1",
+            "atomic_fence": true,
+            "preserved_order": true,
+            "outstanding": 0,
+            "unknown": false
+          },
+          "helpers": {
+            "epoch": "epoch-A",
+            "owner_generation": "g1",
+            "atomic_fence": true,
+            "preserved_order": true,
+            "outstanding": 0,
+            "unknown": false
+          },
+          "claude-waiter": {
+            "epoch": "epoch-A",
+            "owner_generation": "g1",
+            "atomic_fence": true,
+            "preserved_order": true,
+            "outstanding": 0,
+            "unknown": false
+          },
+          "browser": {
+            "epoch": "epoch-A",
+            "owner_generation": "g1",
+            "atomic_fence": true,
+            "preserved_order": true,
+            "outstanding": 0,
+            "unknown": false
+          },
+          "provider": {
+            "epoch": "epoch-A",
+            "owner_generation": "g1",
+            "atomic_fence": true,
+            "preserved_order": true,
+            "outstanding": 0,
+            "unknown": false
+          }
+        },
+        "manifest_digest": "9002bca3bb7d835b7b137086cd20df3c5c7f1d377df29e03e7a9e6f58018d4ae",
+        "queued_work_preserved": true,
+        "pending_approvals_accounted": true
+      },
+      "R3": {
+        "schema": "fixture.R3.v1",
+        "binding": {
+          "machine": "home",
+          "distro": "ExampleLinux",
+          "old_boot": "boot-A",
+          "attempt": "attempt-A"
+        },
+        "at": 1795507203,
+        "expires": 1795507500,
+        "epoch": "epoch-A",
+        "complete": true,
+        "rows": [
+          {
+            "session": "example",
+            "window": "@1",
+            "pane": "%1",
+            "kind": "codex",
+            "id": "00000000-0000-4000-8000-000000000001",
+            "profile": "ops",
+            "cwd": "/srv/example/project",
+            "owner": "example-codex",
+            "settings_generation": "settings-A",
+            "owner_generation": "owner-A",
+            "config_sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            "rollback_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "holds": [],
+            "pending": [],
+            "caller": "tab:example-codex",
+            "expected_tools": [
+              "ops_status"
+            ],
+            "identity_binding": "enrolled",
+            "task_flags": {
+              "goal": false,
+              "stop": false,
+              "parked": false,
+              "private": false,
+              "once": false
+            }
+          },
+          {
+            "session": "example",
+            "window": "@2",
+            "pane": "%2",
+            "kind": "claude",
+            "id": "00000000-0000-4000-8000-000000000002",
+            "profile": "claude",
+            "cwd": "/srv/example/project with spaces",
+            "owner": "example-claude",
+            "settings_generation": "settings-A",
+            "owner_generation": "owner-A",
+            "config_sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            "rollback_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "holds": [],
+            "pending": [],
+            "caller": "tab:example-claude",
+            "expected_tools": [
+              "ops_status"
+            ],
+            "launcher": "byobu-session-state+byobu-claude-role",
+            "role": "claude",
+            "role_manifest_sha256": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+            "identity_binding": "enrolled",
+            "task_flags": {
+              "goal": false,
+              "stop": false,
+              "parked": false,
+              "private": false,
+              "once": false
+            }
+          },
+          {
+            "session": "example",
+            "window": "@3",
+            "pane": "%3",
+            "kind": "shell",
+            "cwd": "/srv/example",
+            "owner": "example-shell",
+            "settings_generation": "settings-A",
+            "owner_generation": "owner-A",
+            "config_sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            "rollback_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "holds": [],
+            "pending": [],
+            "identity_binding": "enrolled",
+            "task_flags": {
+              "goal": false,
+              "stop": false,
+              "parked": false,
+              "private": false,
+              "once": false
+            }
+          }
+        ],
+        "manifest_digest": "9002bca3bb7d835b7b137086cd20df3c5c7f1d377df29e03e7a9e6f58018d4ae"
+      },
+      "sequence": 4,
+      "prior_sequence": 3,
+      "writer_generation": "op-A"
+    }
+  ]
+}

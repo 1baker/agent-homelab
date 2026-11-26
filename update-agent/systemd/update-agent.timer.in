@@ -1,0 +1,2 @@
+# Inert design artifact for #375. Intentionally has no unit sections,
+# schedule or install target. The decision predicate applies at any hour.

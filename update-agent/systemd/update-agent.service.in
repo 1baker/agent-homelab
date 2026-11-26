@@ -1,0 +1,2 @@
+# Inert design artifact for #375. Intentionally has no executable unit sections,
+# ExecStart, activation target or installer. The evaluator uses public fixtures.
