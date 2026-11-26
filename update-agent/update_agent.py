@@ -379,7 +379,10 @@ def verify_restore(value, ctx, epoch, now, observed_versions):
         and identifier(r["new_boot"])
         and (r["new_boot"] != ctx["binding"]["old_boot"]) == ctx["shutdown_confirmed"]
         and r["manifest_digest"] == digest(ctx["rows"])
-        and r["hold_states"] == ctx["snapshot"]["holds"]
+        and r["hold_states"] == dict.fromkeys(ctx["snapshot"]["holds"], True)
+        and all(state is True for state in r["hold_states"].values())
+        and set(r["hold_generations"]) == set(ctx["startup_generations"])
+        and all(identifier(gen) for gen in r["hold_generations"].values())
         and r["service_states"] == ctx["snapshot"]["services"]
         and r["service_enabled"] == ctx["snapshot"]["service_enabled"]
         and r["timer_states"] == ctx["snapshot"]["timers"]
@@ -592,7 +595,8 @@ def evaluate(raw, now):
                         and all(identifier(g) for g in tagged.values()),
                         "unknown_fence_writes",
                     )
-                    owned.update({"hold:" + path: generation for path, generation in tagged.items()})
+                    ctx["startup_generations"] = {"hold:" + path: generation for path, generation in tagged.items()}
+                    owned.update(ctx["startup_generations"])
                 else:
                     require(event["epoch"] == epoch, "stale_fence")
                     if kind == "drain":
@@ -783,16 +787,29 @@ def evaluate(raw, now):
                 )
             if step == "verify_tabs":
                 verify_restore(event["verification"], ctx, epoch, event_time, now_versions)
+                ctx["verified_hold_generations"] = event["verification"]["hold_generations"]
             if step == "resume_dispatcher":
                 expected_release = owned["dispatcher"] if release_dispatcher else None
                 require(event["released_generation"] == expected_release, "resume_readback")
             if step == "report":
-                hold_writes = {key: gen for key, gen in owned.items() if key.startswith("hold:")}
+                hold_writes = ctx["startup_generations"]
                 current = raw["current_generations"]
                 require(all(identifier(current.get(key)) for key in hold_writes), "hold_generation_missing")
+                releases = {key: gen for key, gen in hold_writes.items() if current[key] == gen}
                 require(
-                    event["released_holds"] == {key: gen for key, gen in hold_writes.items() if current[key] == gen},
-                    "hold_release_readback",
+                    all(ctx["verified_hold_generations"][key] == gen for key, gen in releases.items()),
+                    "retired_hold_generation",
+                )
+                require(event["released_holds"] == releases, "hold_release_readback")
+                post = {key: None if key in releases else current[key] for key in hold_writes}
+                states = {
+                    path: present or post["hold:" + path] is not None for path, present in snapshot["holds"].items()
+                }
+                require(
+                    event["post_hold_generations"] == post
+                    and event["post_hold_states"] == states
+                    and all(type(state) is bool for state in event["post_hold_states"].values()),
+                    "post_release_hold_readback",
                 )
                 require(
                     event["released_fence"] == epoch and raw["current_generations"]["fence"] == epoch,

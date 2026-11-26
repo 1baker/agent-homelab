@@ -87,6 +87,16 @@ def ack(raw, step, kind="ack"):
             for p, g in raw["trace"][0]["startup_holds"].items()
             if raw["current_generations"]["hold:" + p] == g
         }
+        event["post_hold_generations"] = {
+            "hold:" + path: None
+            if "hold:" + path in event["released_holds"]
+            else raw["current_generations"]["hold:" + path]
+            for path in raw["trace"][0]["startup_holds"]
+        }
+        event["post_hold_states"] = {
+            path: present or event["post_hold_generations"].get("hold:" + path) is not None
+            for path, present in raw["inventory_snapshot"]["holds"].items()
+        }
     return event
 
 
@@ -125,7 +135,8 @@ def verification(raw, when):
         **common,
         installed=vs,
         running=dict(vs),
-        hold_states=raw["inventory_snapshot"]["holds"],
+        hold_states={path: True for path in raw["inventory_snapshot"]["holds"]},
+        hold_generations={"hold:" + path: gen for path, gen in raw["trace"][0]["startup_holds"].items()},
         service_states=raw["inventory_snapshot"]["services"],
         service_enabled=raw["inventory_snapshot"]["service_enabled"],
         timer_states=raw["inventory_snapshot"]["timers"],
@@ -420,7 +431,7 @@ class RecoveryTests(unittest.TestCase):
         intent(raw, "verify_tabs")
         self.assertNotIn(result(raw)["fixture_state"], ("VERIFIED", "READY"))
 
-    def test_verified_restore_and_foreign_receipts(self):
+    def through_verification(self):
         raw = fixture()
         complete(
             raw,
@@ -438,6 +449,51 @@ class RecoveryTests(unittest.TestCase):
         intent(raw, "verify_tabs")
         event = ack(raw, "verify_tabs")
         event["verification"] = verification(raw, event["at"])
+        return raw
+
+    def test_startup_hold_phase_readback(self):
+        path = ".config/example/STARTUP-HOLD"
+        key = "hold:" + path
+        for case, expected in (
+            ("present", "VERIFIED"),
+            ("early_removal", "UNKNOWN"),
+            ("missing_generation", "UNKNOWN"),
+            ("still_present_after_release", "UNKNOWN"),
+            ("false_release", "UNKNOWN"),
+            ("foreign_preserved", "VERIFIED"),
+            ("foreign_removed", "UNKNOWN"),
+            ("old_generation_reappeared", "UNKNOWN"),
+            ("missing_post_state", "UNKNOWN"),
+        ):
+            with self.subTest(case=case):
+                raw = self.through_verification()
+                verified = raw["trace"][-1]["verification"]
+                if case == "early_removal":
+                    verified["hold_states"][path] = False
+                if case == "missing_generation":
+                    del verified["hold_generations"][key]
+                if case in ("foreign_preserved", "foreign_removed", "false_release"):
+                    raw["current_generations"][key] = "foreign-B"
+                if case in ("foreign_preserved", "old_generation_reappeared"):
+                    verified["hold_generations"][key] = "foreign-B"
+                complete(raw, ["resume_dispatcher", "report"])
+                report = raw["trace"][-1]
+                if case == "still_present_after_release":
+                    report["post_hold_states"][path] = True
+                if case == "false_release":
+                    report["released_holds"][key] = "startup-A"
+                if case == "foreign_removed":
+                    report["post_hold_generations"][key] = None
+                    report["post_hold_states"][path] = False
+                if case == "missing_post_state":
+                    del report["post_hold_states"]
+                outcome = result(raw)
+                self.assertEqual(outcome["fixture_state"], expected, outcome["reason"])
+                if expected == "UNKNOWN":
+                    self.assertTrue(outcome["retain_fences"])
+
+    def test_verified_restore_and_foreign_receipts(self):
+        raw = self.through_verification()
         for case in ("caller", "attempt", "config", "tool", "partial", "consuming", "wrong_boot", "running"):
             with self.subTest(case=case):
                 other = copy.deepcopy(raw)
