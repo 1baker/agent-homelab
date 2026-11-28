@@ -1,3 +1,4 @@
+import threading
 import unittest
 from unittest.mock import Mock
 
@@ -117,3 +118,25 @@ class AgentWakeTests(unittest.TestCase):
         with self.assertRaises(OSError):
             wake.keep_awake(interrupted(), setter)
         self.assertEqual(setter.call_args_list[-1].args, (0x80000000,))
+
+    def test_stalled_reader_expires_on_owner_thread_and_late_copy_does_not_rearm(self):
+        owner = threading.get_ident()
+        released = threading.Event()
+        calls = []
+        busy = self.sample(pro_pending=1)
+        sample = (busy["at"] + wake.FRESH_SECONDS, busy, False)
+
+        def observations():
+            yield sample
+            self.assertTrue(released.wait(3), "reader remained blocked waiting for release")
+            yield sample
+            yield (100_301, self.sample(now=100_301, seq=18, pro_pending=1), False)
+
+        def setter(flags):
+            calls.append((threading.get_ident(), flags))
+            if flags == wake.ES_CONTINUOUS:
+                released.set()
+            return 1
+
+        wake.keep_awake(observations(), setter)
+        self.assertEqual(calls, [(owner, 0x80000001), (owner, 0x80000000)] * 2)

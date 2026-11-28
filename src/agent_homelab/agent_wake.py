@@ -4,6 +4,11 @@ Times are integer seconds on a qualified continuous clock. Readers supply a
 complete observation or unknown. No timer, network transport or wake sender.
 """
 
+from concurrent.futures import Future, wait
+from queue import SimpleQueue
+from threading import Thread
+from time import monotonic
+
 REASONS = ("turn", "handoff", "pro", "helper", "waiter")
 FRESH_SECONDS = 300
 ES_CONTINUOUS = 0x80000000
@@ -64,16 +69,47 @@ def _valid(state):
     )
 
 
-def keep_awake(observations, set_thread_execution_state):
-    """Consume (now, signal, marker_present) on a single dedicated Windows thread.
+def _read_observations(observations, requests):
+    """Perform one pull per request. This thread never owns a Windows hold."""
+    iterator = None
+    while (reply := requests.get()) is not None:
+        try:
+            if iterator is None:
+                iterator = iter(observations)
+            reply.set_result(next(iterator))
+        except BaseException as error:
+            reply.set_exception(error)
+            return
 
-    The observation source must deliver fresh reads at least through signal
-    expiry, yielding unknown on a read failure. The injected setter has the
-    Win32 SetThreadExecutionState ABI. Windows drops the request on thread exit.
+
+def keep_awake(observations, set_thread_execution_state):
+    """Keep all power-state calls on this thread, independently of a blocked read.
+
+    Signal ages are integer seconds, inclusive through FRESH_SECONDS. Anchor
+    that remaining window to a monotonic clock *before* requesting the read.
+    Repeated observations of a signal cannot renew its original deadline.
     """
+    requests = SimpleQueue()
+    reader = Thread(target=_read_observations, args=(observations, requests), daemon=True)
+    reader.start()
     held = False
+    signal_at = None
+    deadline = 0.0
     try:
-        for now, state, marker in observations:
+        while True:
+            reply = Future()
+            started = monotonic()
+            requests.put(reply)
+            if held:
+                wait([reply], timeout=max(0.0, deadline - started))
+                if monotonic() >= deadline:
+                    if not set_thread_execution_state(ES_CONTINUOUS):
+                        raise OSError("execution state release failed")
+                    held = False
+            try:
+                now, state, marker = reply.result()
+            except StopIteration:
+                return
             want = (
                 _nonnegative(now)
                 and marker is False
@@ -81,12 +117,20 @@ def keep_awake(observations, set_thread_execution_state):
                 and 0 <= now - state["at"] <= FRESH_SECONDS
                 and state["busy"]
             )
+            if want:
+                expires = started + (FRESH_SECONDS + 1 - (now - state["at"]))
+                if signal_at is None or state["at"] > signal_at:
+                    signal_at, deadline = state["at"], expires
+                elif state["at"] == signal_at:
+                    deadline = min(deadline, expires)
+                want = state["at"] == signal_at and monotonic() < deadline
             if held != want:
                 flags = ES_CONTINUOUS | ES_SYSTEM_REQUIRED if want else ES_CONTINUOUS
                 if not set_thread_execution_state(flags):
                     raise OSError("execution state change failed")
                 held = want
     finally:
+        requests.put(None)
         if held and not set_thread_execution_state(ES_CONTINUOUS):
             raise OSError("execution state release failed")
 
